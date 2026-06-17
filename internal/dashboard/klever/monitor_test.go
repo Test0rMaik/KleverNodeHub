@@ -3,6 +3,7 @@ package klever
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -299,6 +300,51 @@ func TestMonitor_ElectionsSurviveRestart(t *testing.T) {
 	m2.tick(context.Background())
 	if got := m2.Snapshot().Validators[0].ElectionsMonth; got != 1 {
 		t.Errorf("elections_month after restart = %d, want 1 (no double count)", got)
+	}
+}
+
+// TestClient_ValidatorsPaginates guards the bug where the API ignores pageSize
+// (10/page) and we stopped after the first page. With limit honored, a full
+// page (100) must trigger a fetch of the next page, where a managed validator
+// might live. The mock returns 100 fillers on page 1 and the real one on page 2.
+func TestClient_ValidatorsPaginates(t *testing.T) {
+	socketResponder := func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		var sb strings.Builder
+		sb.WriteString(`{"data":{"validators":[`)
+		switch page {
+		case "1":
+			for i := 0; i < 100; i++ {
+				if i > 0 {
+					sb.WriteString(",")
+				}
+				fmt.Fprintf(&sb, `{"blsPublicKey":"filler%03d","list":"elected"}`, i)
+			}
+		case "2":
+			sb.WriteString(`{"blsPublicKey":"deadbeef","name":"Mine","list":"elected"}`)
+		}
+		sb.WriteString(`]}}`)
+		_, _ = io.WriteString(w, sb.String())
+	}
+	srv := httptest.NewServer(http.HandlerFunc(socketResponder))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, srv.URL, 4)
+	vals, err := client.Validators(context.Background())
+	if err != nil {
+		t.Fatalf("Validators: %v", err)
+	}
+	if len(vals) != 101 {
+		t.Fatalf("expected 101 validators across 2 pages, got %d", len(vals))
+	}
+	found := false
+	for _, v := range vals {
+		if v.BLSPublicKey == "deadbeef" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("page-2 validator was not fetched (pagination stopped early)")
 	}
 }
 

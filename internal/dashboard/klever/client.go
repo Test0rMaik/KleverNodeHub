@@ -65,21 +65,26 @@ func (c *Client) BlockByNonce(ctx context.Context, nonce uint64) (*IndexerBlock,
 	return &env.Data.Block, nil
 }
 
-// Validators returns the validator list across pages (capped at 8 pages of 100,
-// i.e. the full set in practice). Returning every entry — not just elected ones —
-// lets the monitor resolve a managed validator's stats whatever its state
-// (elected, waiting, or jailed).
+// Validators returns the full validator list across pages. Returning every
+// entry — not just elected ones — lets the monitor resolve a managed validator's
+// stats whatever its state (elected, waiting, eligible, or jailed).
+//
+// NB: the page size is controlled by `limit`. The API silently ignores
+// `pageSize` and falls back to 10 per page, which previously made this stop
+// after the first 10 validators and report everyone else as off-chain. maxPages
+// is a safety backstop well above the real validator count (~200).
 func (c *Client) Validators(ctx context.Context) ([]RawValidator, error) {
-	const pageSize = 100
+	const limit = 100
+	const maxPages = 25
 	var all []RawValidator
-	for page := 1; page <= 8; page++ {
-		url := fmt.Sprintf("%s/v1.0/validator/list?page=%d&pageSize=%d", c.apiURL, page, pageSize)
+	for page := 1; page <= maxPages; page++ {
+		url := fmt.Sprintf("%s/v1.0/validator/list?page=%d&limit=%d", c.apiURL, page, limit)
 		var env validatorListEnvelope
 		if err := c.getJSON(ctx, url, &env); err != nil {
 			return nil, err
 		}
 		all = append(all, env.Data.Validators...)
-		if len(env.Data.Validators) < pageSize {
+		if len(env.Data.Validators) < limit {
 			break // last page
 		}
 	}
