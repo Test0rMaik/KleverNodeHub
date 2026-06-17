@@ -210,6 +210,9 @@ func main() {
 	// Emit per-validator metrics (missed blocks, jailed) so the alert engine can
 	// fire rules on them through the normal pipeline.
 	validatorMonitor.SetMetricsWriter(metricsStore)
+	// Persist monthly election history (powers the "elected this month" column
+	// and the long-term chart).
+	validatorMonitor.SetElectionStore(settingsStore)
 	monitorCtx, stopMonitor := context.WithCancel(context.Background())
 	validatorMonitor.Start(monitorCtx)
 
@@ -343,6 +346,7 @@ func main() {
 	mux.Handle("PATCH /api/servers/{id}", authMw(http.HandlerFunc(serverHandler.HandleUpdateServer)))
 	mux.Handle("DELETE /api/servers/{id}", authMw(http.HandlerFunc(serverHandler.HandleDelete)))
 	mux.Handle("GET /api/validators", authMw(http.HandlerFunc(validatorsHandler.HandleSnapshot)))
+	mux.Handle("GET /api/validators/elections", authMw(http.HandlerFunc(validatorsHandler.HandleElections)))
 	mux.Handle("GET /api/nodes", authMw(http.HandlerFunc(serverHandler.HandleListNodes)))
 	mux.Handle("GET /api/nodes/{id}", authMw(http.HandlerFunc(serverHandler.HandleGetNode)))
 	mux.Handle("PATCH /api/nodes/{id}", authMw(http.HandlerFunc(serverHandler.HandleUpdateNode)))
