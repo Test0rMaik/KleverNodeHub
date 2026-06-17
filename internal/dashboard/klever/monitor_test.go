@@ -8,7 +8,24 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestParseRetryAfter(t *testing.T) {
+	cases := map[string]time.Duration{
+		"3":   3 * time.Second,
+		"10":  10 * time.Second,
+		"":    0,
+		"abc": 0,
+		"0":   0,
+		"-5":  0,
+	}
+	for in, want := range cases {
+		if got := parseRetryAfter(in); got != want {
+			t.Errorf("parseRetryAfter(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
 
 // mockChain serves canned indexer/node API responses for a tiny 5-block window.
 // Validator "aa" is managed; "bb" is some other producer.
