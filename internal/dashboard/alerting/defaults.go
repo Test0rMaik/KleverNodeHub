@@ -112,5 +112,34 @@ func DefaultRules() []store.AlertRule {
 			CooldownMin: 30,
 			Builtin:     true,
 		},
+		{
+			// Validator missed >N blocks this epoch. The count resets each epoch,
+			// so the alert clears naturally and re-fires only on a genuinely bad
+			// epoch. Fed by the validator monitor (validator_missed_blocks metric).
+			ID:          "builtin-validator-missed-blocks",
+			Name:        "Validator Missed Blocks",
+			Enabled:     true,
+			MetricName:  "validator_missed_blocks",
+			Condition:   "gt",
+			Threshold:   10,
+			DurationSec: 60,
+			Severity:    "warning",
+			NodeFilter:  "*",
+			CooldownMin: 30,
+			Builtin:     true,
+		},
+		{
+			ID:          "builtin-validator-jailed",
+			Name:        "Validator Jailed",
+			Enabled:     true,
+			MetricName:  "validator_jailed",
+			Condition:   "eq",
+			Threshold:   1,
+			DurationSec: 0,
+			Severity:    "critical",
+			NodeFilter:  "*",
+			CooldownMin: 60,
+			Builtin:     true,
+		},
 	}
 }

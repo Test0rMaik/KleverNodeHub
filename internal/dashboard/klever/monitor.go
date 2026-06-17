@@ -13,15 +13,31 @@ import (
 const klvPrecision = 1_000_000.0
 
 // ManagedNode is the minimal view of a NodeHub-managed node the monitor needs:
-// its on-chain BLS key and a human label.
+// its IDs (for metric attribution), on-chain BLS key, and a human label.
 type ManagedNode struct {
-	BLS  string
-	Name string
+	ID       string
+	ServerID string
+	BLS      string
+	Name     string
 }
 
 // NodesFunc returns the validators NodeHub currently manages. It is called on
 // every poll so added/removed nodes are picked up without a restart.
 type NodesFunc func() []ManagedNode
+
+// MetricsWriter persists per-node validator metrics so the existing alert
+// engine can fire rules on them (e.g. missed blocks, jailed). Satisfied by
+// *store.MetricsStore.
+type MetricsWriter interface {
+	InsertNodeMetrics(nodeID, serverID string, metrics map[string]float64, ts int64) error
+}
+
+// Metric names emitted per managed validator node.
+const (
+	MetricMissedBlocks = "validator_missed_blocks" // missed signing this epoch
+	MetricLeaderMisses = "validator_leader_misses" // rounds it was due to lead but didn't
+	MetricJailed       = "validator_jailed"        // 1 if jailed, else 0
+)
 
 // blockRec is the compact per-block record kept in the rolling window.
 type blockRec struct {
@@ -43,6 +59,7 @@ type Monitor struct {
 
 	maxPerTick int
 	statsEvery int
+	metrics    MetricsWriter
 
 	mu         sync.RWMutex
 	have       map[uint64]blockRec
@@ -73,6 +90,12 @@ func NewMonitor(client *Client, nodes NodesFunc, network string, window int, int
 		have:       make(map[uint64]blockRec),
 		validators: make(map[string]RawValidator),
 	}
+}
+
+// SetMetricsWriter wires a sink for per-validator metrics. Optional; when nil,
+// the monitor still serves snapshots but emits no metrics for the alert engine.
+func (m *Monitor) SetMetricsWriter(w MetricsWriter) {
+	m.metrics = w
 }
 
 // Start runs the poll loop until ctx is cancelled.
@@ -176,7 +199,40 @@ func (m *Monitor) tick(ctx context.Context) {
 	m.ticks++
 	m.lastErr = ""
 	m.latest = m.buildLocked(head, managed)
+	stats := m.validators
 	m.mu.Unlock()
+
+	m.emitMetrics(managed, stats)
+}
+
+// emitMetrics writes per-node validator metrics so the alert engine can fire
+// rules (missed blocks, jailed) through the normal pipeline. Best-effort.
+func (m *Monitor) emitMetrics(managed []ManagedNode, stats map[string]RawValidator) {
+	if m.metrics == nil {
+		return
+	}
+	ts := nowUnix()
+	for _, node := range managed {
+		if node.ID == "" {
+			continue
+		}
+		v, ok := stats[normalizeBLS(node.BLS)]
+		if !ok {
+			continue // not on chain (yet) — nothing authoritative to report
+		}
+		jailed := 0.0
+		if v.List == "jailed" {
+			jailed = 1.0
+		}
+		metrics := map[string]float64{
+			MetricMissedBlocks: float64(v.ValidatorSuccessRate.NumFailure),
+			MetricLeaderMisses: float64(v.LeaderSuccessRate.NumFailure),
+			MetricJailed:       jailed,
+		}
+		if err := m.metrics.InsertNodeMetrics(node.ID, node.ServerID, metrics, ts); err != nil {
+			log.Printf("validator-monitor: write metrics for node %s: %v", node.ID, err)
+		}
+	}
 }
 
 // pruneLocked drops blocks outside the current [start, head] window.
