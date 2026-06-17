@@ -13,19 +13,20 @@ type TimelineCell struct {
 
 // ValidatorView is one managed validator's row in the snapshot.
 type ValidatorView struct {
-	BLS          string         `json:"bls"`
-	Name         string         `json:"name"`
-	NodeName     string         `json:"node_name"`
-	State        string         `json:"state"`
-	OnChain      bool           `json:"on_chain"`
-	Commission   float64        `json:"commission"` // percent
-	SelfStake    float64        `json:"self_stake"` // KLV
-	Allowance    float64        `json:"allowance"`  // KLV (accumulated/claimable fees)
-	Produced     int64          `json:"produced"`   // blocks led this epoch
-	LeaderMisses int64          `json:"leader_misses"`
-	Signed       int64          `json:"signed"`
-	Missed       int64          `json:"missed"`
-	Timeline     []TimelineCell `json:"timeline"`
+	BLS            string         `json:"bls"`
+	Name           string         `json:"name"`
+	NodeName       string         `json:"node_name"`
+	State          string         `json:"state"`
+	OnChain        bool           `json:"on_chain"`
+	ElectionsMonth int            `json:"elections_month"` // epochs elected this calendar month
+	Commission     float64        `json:"commission"`      // percent
+	SelfStake      float64        `json:"self_stake"`      // KLV
+	Allowance      float64        `json:"allowance"`       // KLV (accumulated/claimable fees)
+	Produced       int64          `json:"produced"`        // blocks led this epoch
+	LeaderMisses   int64          `json:"leader_misses"`
+	Signed         int64          `json:"signed"`
+	Missed         int64          `json:"missed"`
+	Timeline       []TimelineCell `json:"timeline"`
 }
 
 // Summary aggregates the managed validators for the stat cards.
@@ -53,3 +54,15 @@ type Snapshot struct {
 }
 
 func nowUnix() int64 { return time.Now().Unix() }
+
+// ElectionHistory is the persisted record of how many epochs each managed
+// validator was elected, bucketed by calendar month. It powers the
+// "elected this month" column and a longer-term chart.
+type ElectionHistory struct {
+	CurrentMonth string `json:"current_month"`
+	// LastEpoch is the highest epoch already counted, so a restart mid-month
+	// doesn't double-count the current epoch.
+	LastEpoch uint64 `json:"last_epoch"`
+	// History maps "YYYY-MM" -> normalized BLS -> epochs elected that month.
+	History map[string]map[string]int `json:"history"`
+}

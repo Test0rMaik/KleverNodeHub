@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Klever Node Hub - Validators</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        /* Six summary cards fit one row on wide monitors; falls back to the
+           shared responsive grid (4/2/1) below this width. */
+        @media (min-width: 1500px) {
+            #vm-stats-grid { grid-template-columns: repeat(6, 1fr); }
+        }
+    </style>
     <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#0d1117">
     <link rel="icon" type="image/png" sizes="192x192" href="/static/img/icon-192.png">
@@ -110,6 +117,7 @@
                         <table class="data-table" id="vm-table" style="width:100%;border-collapse:collapse;">
                             <thead>
                                 <tr style="text-align:left;color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;">
+                                    <th style="padding:8px 10px;text-align:right;" title="Epochs this validator was elected this calendar month (resets monthly)">Elected (mo)</th>
                                     <th style="padding:8px 10px;">Name</th>
                                     <th style="padding:8px 10px;">State</th>
                                     <th style="padding:8px 10px;text-align:right;">Comm.</th>
@@ -122,9 +130,19 @@
                                 </tr>
                             </thead>
                             <tbody id="vm-table-body">
-                                <tr><td colspan="9" style="padding:16px;text-align:center;color:var(--text-muted);">Loading…</td></tr>
+                                <tr><td colspan="10" style="padding:16px;text-align:center;color:var(--text-muted);">Loading…</td></tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <div class="card mb-16">
+                    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                        <h3>Elections per Month</h3>
+                        <span class="text-sm text-muted">epochs your validators were elected, by month</span>
+                    </div>
+                    <div id="vm-elect-chart" style="display:flex;align-items:flex-end;gap:10px;height:180px;padding:12px 4px 0;overflow-x:auto;">
+                        <div class="text-sm text-muted" style="margin:auto;">Loading…</div>
                     </div>
                 </div>
 
@@ -151,8 +169,60 @@
     (async function() {
         await API.refresh();
         loadValidators();
+        loadElections();
         setInterval(loadValidators, 6000);
+        setInterval(loadElections, 60000);
     })();
+
+    var MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    function monthLabel(ym) {
+        var parts = String(ym).split('-');
+        if (parts.length !== 2) return ym;
+        var m = parseInt(parts[1], 10);
+        return (MONTH_NAMES[m - 1] || ym) + " '" + parts[0].slice(2);
+    }
+
+    async function loadElections() {
+        var data;
+        try {
+            data = await API.getJSON('/api/validators/elections');
+        } catch (e) {
+            return;
+        }
+        if (!data) return;
+        renderElectionChart(data);
+    }
+
+    function renderElectionChart(data) {
+        var chart = document.getElementById('vm-elect-chart');
+        var history = data.history || {};
+        // Sum per month across all managed validators.
+        var months = Object.keys(history).sort();
+        var totals = months.map(function(ym) {
+            var counts = history[ym] || {};
+            var sum = 0;
+            for (var bls in counts) { if (counts.hasOwnProperty(bls)) sum += counts[bls]; }
+            return { ym: ym, total: sum };
+        });
+        // Keep the most recent 12 months.
+        if (totals.length > 12) totals = totals.slice(totals.length - 12);
+        if (totals.length === 0) {
+            chart.innerHTML = '<div class="text-sm text-muted" style="margin:auto;">No election history yet — it builds up as epochs pass.</div>';
+            return;
+        }
+        var max = totals.reduce(function(mx, t) { return Math.max(mx, t.total); }, 0) || 1;
+        chart.innerHTML = totals.map(function(t) {
+            var pct = Math.round((t.total / max) * 100);
+            var isCurrent = t.ym === data.current_month;
+            var barColor = isCurrent ? 'var(--accent)' : 'rgba(87,184,255,0.55)';
+            return '<div style="flex:1 1 0;min-width:34px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:6px;" title="' + esc(monthLabel(t.ym)) + ': ' + fmtInt(t.total) + ' elections">' +
+                '<div style="font-size:11px;color:var(--text-secondary);font-variant-numeric:tabular-nums;">' + fmtInt(t.total) + '</div>' +
+                '<div style="width:70%;background:' + barColor + ';border-radius:4px 4px 0 0;height:' + pct + '%;min-height:2px;transition:height .3s;"></div>' +
+                '<div style="font-size:10px;color:var(--text-muted);white-space:nowrap;">' + esc(monthLabel(t.ym)) + '</div>' +
+                '</div>';
+        }).join('');
+    }
 
     function esc(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
@@ -221,11 +291,12 @@
     function renderTable(vals) {
         var body = document.getElementById('vm-table-body');
         if (vals.length === 0) {
-            body.innerHTML = '<tr><td colspan="9" style="padding:16px;text-align:center;color:var(--text-muted);">No managed validators found. Validators are matched to your nodes by BLS key.</td></tr>';
+            body.innerHTML = '<tr><td colspan="10" style="padding:16px;text-align:center;color:var(--text-muted);">No managed validators found. Validators are matched to your nodes by BLS key.</td></tr>';
             return;
         }
         body.innerHTML = vals.map(function(v) {
             return '<tr style="border-top:1px solid var(--border);">' +
+                '<td style="padding:10px;text-align:right;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;">' + fmtInt(v.elections_month) + '</td>' +
                 '<td style="padding:10px;color:var(--text-primary);font-weight:600;">' + esc(v.name) + '</td>' +
                 '<td style="padding:10px;">' + stateBadge(v.state) + '</td>' +
                 '<td style="padding:10px;text-align:right;color:var(--text-secondary);">' + (v.on_chain ? (Number(v.commission).toFixed(2) + '%') : '–') + '</td>' +

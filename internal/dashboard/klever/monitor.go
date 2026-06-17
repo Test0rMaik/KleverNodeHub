@@ -2,6 +2,7 @@ package klever
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"sort"
 	"strings"
@@ -39,6 +40,16 @@ const (
 	MetricJailed       = "validator_jailed"        // 1 if jailed, else 0
 )
 
+// electionsKey is the KV key under which the election history is persisted.
+const electionsKey = "validator_elections"
+
+// KVStore is the minimal persistence the monitor needs for election history.
+// Satisfied by *store.SettingsStore.
+type KVStore interface {
+	Get(key string) (string, error)
+	Set(key, value string) error
+}
+
 // blockRec is the compact per-block record kept in the rolling window.
 type blockRec struct {
 	nonce       uint64
@@ -60,6 +71,12 @@ type Monitor struct {
 	maxPerTick int
 	statsEvery int
 	metrics    MetricsWriter
+
+	// Election history persistence. electKV/elect are written only by the single
+	// tick goroutine; reads in buildLocked/ElectionHistory happen under m.mu.
+	electKV     KVStore
+	elect       *ElectionHistory
+	electLoaded bool
 
 	mu         sync.RWMutex
 	have       map[uint64]blockRec
@@ -96,6 +113,87 @@ func NewMonitor(client *Client, nodes NodesFunc, network string, window int, int
 // the monitor still serves snapshots but emits no metrics for the alert engine.
 func (m *Monitor) SetMetricsWriter(w MetricsWriter) {
 	m.metrics = w
+}
+
+// SetElectionStore wires persistence for the monthly election history. Optional;
+// when nil, the monitor doesn't track elections.
+func (m *Monitor) SetElectionStore(kv KVStore) {
+	m.electKV = kv
+}
+
+// ElectionHistory returns a copy of the persisted monthly election history.
+func (m *Monitor) ElectionHistory() ElectionHistory {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := ElectionHistory{History: map[string]map[string]int{}}
+	if m.elect == nil {
+		return out
+	}
+	out.CurrentMonth = m.elect.CurrentMonth
+	out.LastEpoch = m.elect.LastEpoch
+	for month, counts := range m.elect.History {
+		cp := make(map[string]int, len(counts))
+		for k, v := range counts {
+			cp[k] = v
+		}
+		out.History[month] = cp
+	}
+	return out
+}
+
+// ensureElectionsLoaded loads the persisted history on first use. Called only
+// from the tick goroutine before the lock is taken.
+func (m *Monitor) ensureElectionsLoaded() {
+	if m.electLoaded || m.electKV == nil {
+		return
+	}
+	m.electLoaded = true
+	e := &ElectionHistory{History: map[string]map[string]int{}}
+	if raw, err := m.electKV.Get(electionsKey); err == nil && raw != "" {
+		var loaded ElectionHistory
+		if json.Unmarshal([]byte(raw), &loaded) == nil {
+			if loaded.History == nil {
+				loaded.History = map[string]map[string]int{}
+			}
+			e = &loaded
+		}
+	}
+	m.mu.Lock()
+	m.elect = e
+	m.mu.Unlock()
+}
+
+// updateElectionsLocked counts one election per elected managed validator when a
+// new epoch is observed, into the current calendar month's bucket. Returns true
+// if the history changed and should be persisted. Caller holds m.mu.
+func (m *Monitor) updateElectionsLocked(month string, epoch uint64, managed []ManagedNode) bool {
+	if m.elect == nil {
+		return false
+	}
+	dirty := false
+	if m.elect.CurrentMonth != month {
+		m.elect.CurrentMonth = month
+		dirty = true
+	}
+	if epoch > m.elect.LastEpoch {
+		bucket := m.elect.History[month]
+		if bucket == nil {
+			bucket = map[string]int{}
+			m.elect.History[month] = bucket
+		}
+		for _, node := range managed {
+			bls := normalizeBLS(node.BLS)
+			if bls == "" {
+				continue
+			}
+			if v, ok := m.validators[bls]; ok && v.List == "elected" {
+				bucket[bls]++
+			}
+		}
+		m.elect.LastEpoch = epoch
+		dirty = true
+	}
+	return dirty
 }
 
 // Start runs the poll loop until ctx is cancelled.
@@ -180,6 +278,8 @@ func (m *Monitor) tick(ctx context.Context) {
 	}
 
 	managed := m.nodes()
+	m.ensureElectionsLoaded()
+	month := time.Now().Format("2006-01")
 
 	m.mu.Lock()
 	for _, r := range fetched {
@@ -198,11 +298,21 @@ func (m *Monitor) tick(ctx context.Context) {
 	m.overview = *ov
 	m.ticks++
 	m.lastErr = ""
+	electionsDirty := m.updateElectionsLocked(month, ov.EpochNumber, managed)
 	m.latest = m.buildLocked(head, managed)
 	stats := m.validators
+	var electPayload []byte
+	if electionsDirty {
+		electPayload, _ = json.Marshal(m.elect)
+	}
 	m.mu.Unlock()
 
 	m.emitMetrics(managed, stats)
+	if electPayload != nil && m.electKV != nil {
+		if err := m.electKV.Set(electionsKey, string(electPayload)); err != nil {
+			log.Printf("validator-monitor: persist elections: %v", err)
+		}
+	}
 }
 
 // emitMetrics writes per-node validator metrics so the alert engine can fire
@@ -293,20 +403,28 @@ func (m *Monitor) buildLocked(head uint64, managed []ManagedNode) *Snapshot {
 		}
 		elected := state == "elected"
 
+		electionsMonth := 0
+		if m.elect != nil {
+			if bucket := m.elect.History[m.elect.CurrentMonth]; bucket != nil {
+				electionsMonth = bucket[bls]
+			}
+		}
+
 		vv := ValidatorView{
-			BLS:          node.BLS,
-			Name:         firstNonEmpty(v.Name, node.Name),
-			NodeName:     node.Name,
-			State:        state,
-			OnChain:      onChain,
-			Commission:   float64(v.Commission) / 100.0, // basis points -> percent
-			SelfStake:    float64(v.SelfStake) / klvPrecision,
-			Allowance:    float64(v.AccumulatedFees) / klvPrecision,
-			Produced:     v.LeaderSuccessRate.NumSuccess,
-			LeaderMisses: v.LeaderSuccessRate.NumFailure,
-			Signed:       v.ValidatorSuccessRate.NumSuccess,
-			Missed:       v.ValidatorSuccessRate.NumFailure,
-			Timeline:     make([]TimelineCell, 0, len(nonces)),
+			BLS:            node.BLS,
+			Name:           firstNonEmpty(v.Name, node.Name),
+			NodeName:       node.Name,
+			State:          state,
+			OnChain:        onChain,
+			ElectionsMonth: electionsMonth,
+			Commission:     float64(v.Commission) / 100.0, // basis points -> percent
+			SelfStake:      float64(v.SelfStake) / klvPrecision,
+			Allowance:      float64(v.AccumulatedFees) / klvPrecision,
+			Produced:       v.LeaderSuccessRate.NumSuccess,
+			LeaderMisses:   v.LeaderSuccessRate.NumFailure,
+			Signed:         v.ValidatorSuccessRate.NumSuccess,
+			Missed:         v.ValidatorSuccessRate.NumFailure,
+			Timeline:       make([]TimelineCell, 0, len(nonces)),
 		}
 
 		for _, n := range nonces {

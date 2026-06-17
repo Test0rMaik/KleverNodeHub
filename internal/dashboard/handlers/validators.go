@@ -22,3 +22,10 @@ func NewValidatorsHandler(monitor *klever.Monitor) *ValidatorsHandler {
 func (h *ValidatorsHandler) HandleSnapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.monitor.Snapshot())
 }
+
+// HandleElections handles GET /api/validators/elections — returns the monthly
+// election history (epochs each managed validator was elected, per calendar
+// month), for the "elected this month" column and the long-term chart.
+func (h *ValidatorsHandler) HandleElections(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.monitor.ElectionHistory())
+}

@@ -237,6 +237,71 @@ func TestMonitor_NoMetricsForOffChainNode(t *testing.T) {
 	}
 }
 
+type fakeKV struct{ data map[string]string }
+
+func newFakeKV() *fakeKV { return &fakeKV{data: map[string]string{}} }
+
+func (f *fakeKV) Get(k string) (string, error) { return f.data[k], nil }
+func (f *fakeKV) Set(k, v string) error        { f.data[k] = v; return nil }
+
+func TestMonitor_TracksMonthlyElections(t *testing.T) {
+	srv := mockChain(t)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, srv.URL, 4)
+	nodes := func() []ManagedNode {
+		return []ManagedNode{{ID: "n1", ServerID: "s1", BLS: "0xAA", Name: "n1"}}
+	}
+	kv := newFakeKV()
+	m := NewMonitor(client, nodes, "mainnet", 5, 0)
+	m.SetElectionStore(kv)
+
+	m.tick(context.Background())
+	if got := m.Snapshot().Validators[0].ElectionsMonth; got != 1 {
+		t.Fatalf("elections_month after first tick = %d, want 1", got)
+	}
+
+	// Same epoch on the next tick must not double-count.
+	m.tick(context.Background())
+	if got := m.Snapshot().Validators[0].ElectionsMonth; got != 1 {
+		t.Errorf("elections_month after second tick (same epoch) = %d, want 1", got)
+	}
+
+	hist := m.ElectionHistory()
+	if hist.CurrentMonth == "" {
+		t.Error("expected a current month")
+	}
+	if hist.History[hist.CurrentMonth][normalizeBLS("0xAA")] != 1 {
+		t.Errorf("history count = %v, want 1", hist.History[hist.CurrentMonth])
+	}
+	if kv.data[electionsKey] == "" {
+		t.Error("election history was not persisted to the KV store")
+	}
+}
+
+func TestMonitor_ElectionsSurviveRestart(t *testing.T) {
+	srv := mockChain(t)
+	defer srv.Close()
+	client := NewClient(srv.URL, srv.URL, 4)
+	nodes := func() []ManagedNode {
+		return []ManagedNode{{ID: "n1", ServerID: "s1", BLS: "aa", Name: "n1"}}
+	}
+	kv := newFakeKV()
+
+	m1 := NewMonitor(client, nodes, "mainnet", 5, 0)
+	m1.SetElectionStore(kv)
+	m1.tick(context.Background())
+
+	// A fresh monitor sharing the KV (i.e. a restart) must not re-count the same
+	// epoch — the persisted LastEpoch guards against it.
+	m2 := NewMonitor(client, nodes, "mainnet", 5, 0)
+	m2.SetElectionStore(kv)
+	m2.tick(context.Background())
+	if got := m2.Snapshot().Validators[0].ElectionsMonth; got != 1 {
+		t.Errorf("elections_month after restart = %d, want 1 (no double count)", got)
+	}
+}
+
 func TestNormalizeBLS(t *testing.T) {
 	cases := map[string]string{
 		"0xAB":  "ab",
