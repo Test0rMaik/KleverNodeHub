@@ -1,18 +1,39 @@
 package dashboard
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	kvcrypto "github.com/CTJaeger/KleverNodeHub/internal/crypto"
 	"github.com/CTJaeger/KleverNodeHub/internal/version"
 	"github.com/CTJaeger/KleverNodeHub/web"
 )
+
+// sidebarMarker is the placeholder each page template uses where the shared
+// sidebar partial is injected. Defining the sidebar once avoids the drift that
+// came from copy-pasting it into every page (nav links going missing on some).
+const sidebarMarker = "<!--#sidebar-->"
+
+var (
+	sidebarOnce sync.Once
+	sidebarHTML []byte
+	sidebarErr  error
+)
+
+// loadSidebar reads and caches the shared sidebar partial from the embedded FS.
+func loadSidebar() ([]byte, error) {
+	sidebarOnce.Do(func() {
+		sidebarHTML, sidebarErr = web.StaticFS.ReadFile("templates/partials/sidebar.html")
+	})
+	return sidebarHTML, sidebarErr
+}
 
 // ServerConfig holds the dashboard HTTP server configuration.
 type ServerConfig struct {
@@ -109,6 +130,16 @@ func (s *Server) servePage(templatePath string) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, "page not found", http.StatusNotFound)
 			return
+		}
+
+		// Inject the shared sidebar partial where the page declares its marker.
+		if bytes.Contains(tmpl, []byte(sidebarMarker)) {
+			sidebar, err := loadSidebar()
+			if err != nil {
+				http.Error(w, "sidebar unavailable", http.StatusInternalServerError)
+				return
+			}
+			tmpl = bytes.Replace(tmpl, []byte(sidebarMarker), sidebar, 1)
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

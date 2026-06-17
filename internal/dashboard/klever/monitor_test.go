@@ -173,6 +173,70 @@ func TestClient_ParsesValidatorList(t *testing.T) {
 	}
 }
 
+type capturedMetric struct {
+	nodeID, serverID string
+	metrics          map[string]float64
+}
+
+type fakeMetricsWriter struct{ writes []capturedMetric }
+
+func (f *fakeMetricsWriter) InsertNodeMetrics(nodeID, serverID string, metrics map[string]float64, ts int64) error {
+	f.writes = append(f.writes, capturedMetric{nodeID, serverID, metrics})
+	return nil
+}
+
+func TestMonitor_EmitsValidatorMetrics(t *testing.T) {
+	srv := mockChain(t)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, srv.URL, 4)
+	nodes := func() []ManagedNode {
+		return []ManagedNode{{ID: "node-1", ServerID: "srv-1", BLS: "0xAA", Name: "n1"}}
+	}
+	m := NewMonitor(client, nodes, "mainnet", 5, 0)
+	sink := &fakeMetricsWriter{}
+	m.SetMetricsWriter(sink)
+
+	m.tick(context.Background())
+
+	if len(sink.writes) != 1 {
+		t.Fatalf("expected 1 metric write, got %d", len(sink.writes))
+	}
+	w := sink.writes[0]
+	if w.nodeID != "node-1" || w.serverID != "srv-1" {
+		t.Errorf("write ids = %s/%s, want node-1/srv-1", w.nodeID, w.serverID)
+	}
+	// Mock validator "aa": validatorSuccessRate.numFailure=1, leaderSuccessRate.numFailure=1, elected.
+	if w.metrics[MetricMissedBlocks] != 1 {
+		t.Errorf("%s = %v, want 1", MetricMissedBlocks, w.metrics[MetricMissedBlocks])
+	}
+	if w.metrics[MetricLeaderMisses] != 1 {
+		t.Errorf("%s = %v, want 1", MetricLeaderMisses, w.metrics[MetricLeaderMisses])
+	}
+	if w.metrics[MetricJailed] != 0 {
+		t.Errorf("%s = %v, want 0 (elected, not jailed)", MetricJailed, w.metrics[MetricJailed])
+	}
+}
+
+func TestMonitor_NoMetricsForOffChainNode(t *testing.T) {
+	srv := mockChain(t)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, srv.URL, 4)
+	nodes := func() []ManagedNode {
+		return []ManagedNode{{ID: "node-x", ServerID: "srv-1", BLS: "ff", Name: "ghost"}}
+	}
+	m := NewMonitor(client, nodes, "mainnet", 5, 0)
+	sink := &fakeMetricsWriter{}
+	m.SetMetricsWriter(sink)
+
+	m.tick(context.Background())
+
+	if len(sink.writes) != 0 {
+		t.Fatalf("off-chain node should emit no metrics, got %d", len(sink.writes))
+	}
+}
+
 func TestNormalizeBLS(t *testing.T) {
 	cases := map[string]string{
 		"0xAB":  "ab",

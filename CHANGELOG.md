@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-06-17
+- **Validator alerts (incl. Telegram)**: The validator monitor now feeds the alert engine. Each poll writes per-managed-validator metrics — `validator_missed_blocks` (missed signing this epoch), `validator_leader_misses`, and `validator_jailed` — into the metrics store, so they flow through the existing rule → notification → Telegram pipeline like any other metric. Two built-in rules ship enabled: **Validator Missed Blocks** (warning when >10 missed in an epoch; the count resets each epoch so it clears naturally and only re-fires on a genuinely bad epoch) and **Validator Jailed** (critical). Both are tunable on the Alerts page, and the three metrics are selectable when creating custom rules.
+- **Single shared sidebar (fixes missing nav links)**: The sidebar was copy-pasted into every page template, so new links drifted out of sync — "Docker Cleanup" and "Validators" were missing from some pages. It's now defined once in `web/templates/partials/sidebar.html` and injected server-side (`servePage` replaces a `<!--#sidebar-->` marker), with the active link set client-side from the URL. One source of truth; every page shows the full nav.
 - **Node log auto-refresh defaults to 5s** (was 10s).
 - **Fork note — validator monitoring page kept**: Upstream reverted the validator monitoring page. This fork keeps it on purpose: the block-production timeline is genuinely useful for validator owners watching their own nodes. The feature (the **Validators** sidebar entry, the page, and the `internal/dashboard/klever` poller) is retained here and re-applied on top of every upstream sync.
 

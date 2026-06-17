@@ -198,10 +198,18 @@ func main() {
 			if label == "" {
 				label = n.Name
 			}
-			managed = append(managed, klever.ManagedNode{BLS: n.BLSPublicKey, Name: label})
+			managed = append(managed, klever.ManagedNode{
+				ID:       n.ID,
+				ServerID: n.ServerID,
+				BLS:      n.BLSPublicKey,
+				Name:     label,
+			})
 		}
 		return managed
 	}, kleverNetwork, 100, 6*time.Second)
+	// Emit per-validator metrics (missed blocks, jailed) so the alert engine can
+	// fire rules on them through the normal pipeline.
+	validatorMonitor.SetMetricsWriter(metricsStore)
 	monitorCtx, stopMonitor := context.WithCancel(context.Background())
 	validatorMonitor.Start(monitorCtx)
 

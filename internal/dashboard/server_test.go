@@ -3,6 +3,7 @@ package dashboard
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	kvcrypto "github.com/CTJaeger/KleverNodeHub/internal/crypto"
@@ -65,6 +66,42 @@ func TestServerOverviewPage(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("GET /overview = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestServerInjectsSharedSidebar(t *testing.T) {
+	srv := NewServer(&ServerConfig{Addr: ":9443"})
+	_ = srv.SetupRoutes()
+
+	// Every sidebar-bearing page must render the shared partial with the full
+	// nav (incl. the links that used to go missing per-page), and no leftover
+	// marker. This guards against the duplication bug that lost links.
+	for _, path := range []string{"/overview", "/validators", "/docker-cleanup", "/alerts", "/slotinspector", "/batchconfig", "/settings"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		srv.Mux().ServeHTTP(w, req)
+
+		body := w.Body.String()
+		if w.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, w.Code)
+			continue
+		}
+		if strings.Contains(body, sidebarMarker) {
+			t.Errorf("GET %s: sidebar marker not replaced", path)
+		}
+		for _, link := range []string{`href="/overview"`, `href="/validators"`, `href="/docker-cleanup"`, `href="/slotinspector"`, `href="/batchconfig"`, `href="/alerts"`, `href="/settings"`} {
+			if !strings.Contains(body, link) {
+				t.Errorf("GET %s: missing nav link %s", path, link)
+			}
+		}
+	}
+
+	// Login has no sidebar marker and must still render fine (no injection).
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	w := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(w, req)
+	if strings.Contains(w.Body.String(), sidebarMarker) {
+		t.Error("login page unexpectedly contains the sidebar marker")
 	}
 }
 
