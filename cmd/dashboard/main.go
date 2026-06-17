@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -182,7 +183,16 @@ func main() {
 	if kleverNodeURL == "" {
 		kleverNodeURL = defNodeURL
 	}
-	kleverClient := klever.NewClient(kleverAPIURL, kleverNodeURL, 4)
+	// Poll cadence is overridable (klever_poll_secs) so operators can back off
+	// further if their endpoint rate-limits; default 8s, floor 4s.
+	kleverPollSecs := 8
+	if v, _ := settingsStore.Get("klever_poll_secs"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 4 {
+			kleverPollSecs = n
+		}
+	}
+	// maxInflight kept low (2) to stay under Klever's per-IP rate limit.
+	kleverClient := klever.NewClient(kleverAPIURL, kleverNodeURL, 2)
 	validatorMonitor := klever.NewMonitor(kleverClient, func() []klever.ManagedNode {
 		nodes, err := nodeStore.ListAll("")
 		if err != nil {
@@ -206,7 +216,7 @@ func main() {
 			})
 		}
 		return managed
-	}, kleverNetwork, 100, 6*time.Second)
+	}, kleverNetwork, 100, time.Duration(kleverPollSecs)*time.Second)
 	// Emit per-validator metrics (missed blocks, jailed) so the alert engine can
 	// fire rules on them through the normal pipeline.
 	validatorMonitor.SetMetricsWriter(metricsStore)

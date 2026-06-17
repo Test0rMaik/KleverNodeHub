@@ -102,8 +102,8 @@ func NewMonitor(client *Client, nodes NodesFunc, network string, window int, int
 		network:    network,
 		window:     window,
 		interval:   interval,
-		maxPerTick: 30,
-		statsEvery: 5, // refresh validator stats every 5 ticks (~30s)
+		maxPerTick: 8, // gentle backfill: fills the 100-block window over a few ticks
+		statsEvery: 5, // refresh validator stats every 5 ticks
 		have:       make(map[uint64]blockRec),
 		validators: make(map[string]RawValidator),
 	}
