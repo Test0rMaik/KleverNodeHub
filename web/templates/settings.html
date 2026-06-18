@@ -41,6 +41,7 @@
                     <button class="tab" onclick="switchTab('notifications')">Notifications</button>
                     <button class="tab" onclick="switchTab('security')">Security</button>
                     <button class="tab" onclick="switchTab('agents')">Agents</button>
+                    <button class="tab" onclick="switchTab('klever')">Klever</button>
                 </div>
 
                 <!-- General -->
@@ -248,6 +249,23 @@
                         <button class="btn btn-secondary btn-sm" onclick="resetSection('agents')">Reset to Defaults</button>
                     </div>
                 </div>
+
+                <!-- Klever -->
+                <div id="tab-klever" class="tab-content">
+                    <div class="settings-section">
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Klever API URL</div>
+                                <div class="setting-desc">Override the official Klever indexer API used by the Validators page (blocks + validators). Set this to your own indexer's base URL (e.g. <code>https://api.my-indexer.example</code>) — useful if you run your own indexer with different rate limits. Leave blank to use the official API for the selected network. Applies live, no restart.</div>
+                            </div>
+                            <input class="form-input" id="s-klever_api_url" type="text" placeholder="(blank = official Klever API)">
+                        </div>
+                    </div>
+                    <div class="section-actions">
+                        <button class="btn btn-primary btn-sm" onclick="saveSection('klever')">Save</button>
+                        <button class="btn btn-secondary btn-sm" onclick="resetSection('klever')">Reset to Defaults</button>
+                    </div>
+                </div>
             </div>
             </div><!-- /page-body -->
         </main>
@@ -265,7 +283,8 @@
             general: ['dashboard_name'],
             metrics: ['metrics_interval_sec', 'node_poll_interval_sec', 'hot_retention_days', 'archive_retention_days'],
             notifications: ['notify_default_severity'],
-            agents: ['heartbeat_timeout_sec', 'agent_discovery_interval_sec', 'agent_update_url', 'agent_update_version']
+            agents: ['heartbeat_timeout_sec', 'agent_discovery_interval_sec', 'agent_update_url', 'agent_update_version'],
+            klever: ['klever_api_url']
         };
 
         function toggleSidebar() {

@@ -447,6 +447,46 @@ func TestMonitor_CountsFromBlocksDespiteValidatorListFailure(t *testing.T) {
 	}
 }
 
+// TestMonitor_APIURLProviderOverridesLive verifies the monitor applies the
+// API-URL provider each tick, so a custom indexer URL takes effect without a
+// restart. The provider points at our mock; without it the client would target
+// a dead default and the snapshot would not be ready.
+func TestMonitor_APIURLProviderOverridesLive(t *testing.T) {
+	srv := mockChain(t)
+	defer srv.Close()
+
+	// Client starts pointed at a bogus URL; the provider redirects it to the mock.
+	client := NewClient("https://invalid.example.invalid", 4)
+	nodes := func() []ManagedNode { return []ManagedNode{{ID: "a", BLS: "aa", Name: "A"}} }
+	m := NewMonitor(client, nodes, "mainnet", 5, 0)
+	m.SetAPIURLProvider(func() string { return srv.URL })
+
+	m.tick(context.Background())
+
+	snap := m.Snapshot()
+	if !snap.Ready {
+		t.Fatalf("snapshot not ready — provider override not applied: %q", snap.Error)
+	}
+	if snap.HeadNonce != 5 {
+		t.Errorf("head = %d, want 5 (fetched via overridden URL)", snap.HeadNonce)
+	}
+}
+
+func TestClient_SetBaseURL(t *testing.T) {
+	c := NewClient("https://a.example/", 1)
+	if c.baseURL() != "https://a.example" {
+		t.Errorf("initial baseURL = %q, want trimmed", c.baseURL())
+	}
+	c.SetBaseURL("https://b.example/indexer/")
+	if c.baseURL() != "https://b.example/indexer" {
+		t.Errorf("after SetBaseURL = %q", c.baseURL())
+	}
+	c.SetBaseURL("   ") // empty/blank is a no-op
+	if c.baseURL() != "https://b.example/indexer" {
+		t.Errorf("blank SetBaseURL changed URL to %q", c.baseURL())
+	}
+}
+
 func TestNormalizeBLS(t *testing.T) {
 	cases := map[string]string{
 		"0xAB":  "ab",

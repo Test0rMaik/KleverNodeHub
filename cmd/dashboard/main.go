@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -174,10 +175,15 @@ func main() {
 	if kleverNetwork == "" {
 		kleverNetwork = "mainnet"
 	}
-	defAPIURL, _ := klever.DefaultAPIURLs(kleverNetwork)
-	kleverAPIURL, _ := settingsStore.Get("klever_api_url")
-	if kleverAPIURL == "" {
-		kleverAPIURL = defAPIURL
+	// resolveKleverAPIURL returns the operator-configured indexer URL (Settings →
+	// Klever API URL) when set, else the network default. Called live each poll
+	// so a custom indexer takes effect without a restart.
+	resolveKleverAPIURL := func() string {
+		if u, _ := settingsStore.Get("klever_api_url"); strings.TrimSpace(u) != "" {
+			return strings.TrimSpace(u)
+		}
+		da, _ := klever.DefaultAPIURLs(kleverNetwork)
+		return da
 	}
 	// Poll cadence is overridable (klever_poll_secs) so operators can back off
 	// further if their endpoint rate-limits; default 8s, floor 4s.
@@ -189,7 +195,7 @@ func main() {
 	}
 	// maxInflight kept low (2) to stay under Klever's per-IP rate limit. The
 	// monitor talks only to the indexer API (blocks + validators) now.
-	kleverClient := klever.NewClient(kleverAPIURL, 2)
+	kleverClient := klever.NewClient(resolveKleverAPIURL(), 2)
 	validatorMonitor := klever.NewMonitor(kleverClient, func() []klever.ManagedNode {
 		nodes, err := nodeStore.ListAll("")
 		if err != nil {
@@ -214,6 +220,8 @@ func main() {
 		}
 		return managed
 	}, kleverNetwork, 100, time.Duration(kleverPollSecs)*time.Second)
+	// Apply the operator's custom indexer URL live (Settings → Klever API URL).
+	validatorMonitor.SetAPIURLProvider(resolveKleverAPIURL)
 	// Emit per-validator metrics (missed blocks, jailed) so the alert engine can
 	// fire rules on them through the normal pipeline.
 	validatorMonitor.SetMetricsWriter(metricsStore)

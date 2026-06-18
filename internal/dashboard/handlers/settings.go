@@ -38,6 +38,9 @@ var settingsCategories = map[string][]string{
 		"agent_update_url",
 		"agent_update_version",
 	},
+	"klever": {
+		"klever_api_url",
+	},
 }
 
 // settingsDefaults defines default values for settings.
@@ -52,6 +55,7 @@ var settingsDefaults = map[string]string{
 	"agent_discovery_interval_sec": "300",
 	"agent_update_url":             "",
 	"agent_update_version":         "",
+	"klever_api_url":               "",
 }
 
 // HandleGetAll handles GET /api/settings — returns all settings grouped by category.
