@@ -15,6 +15,7 @@ import (
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard/ws"
 	"github.com/CTJaeger/KleverNodeHub/internal/models"
 	"github.com/CTJaeger/KleverNodeHub/internal/store"
+	"github.com/CTJaeger/KleverNodeHub/internal/version"
 )
 
 // UpdateHandler handles agent binary update API requests.
@@ -22,15 +23,17 @@ type UpdateHandler struct {
 	hub            *ws.Hub
 	updateStore    *dashboard.UpdateStore
 	serverStore    *store.ServerStore
+	settingsStore  *store.SettingsStore
 	versionChecker *dashboard.VersionChecker
 }
 
 // NewUpdateHandler creates a new UpdateHandler.
-func NewUpdateHandler(hub *ws.Hub, updateStore *dashboard.UpdateStore, serverStore *store.ServerStore, vc *dashboard.VersionChecker) *UpdateHandler {
+func NewUpdateHandler(hub *ws.Hub, updateStore *dashboard.UpdateStore, serverStore *store.ServerStore, settingsStore *store.SettingsStore, vc *dashboard.VersionChecker) *UpdateHandler {
 	return &UpdateHandler{
 		hub:            hub,
 		updateStore:    updateStore,
 		serverStore:    serverStore,
+		settingsStore:  settingsStore,
 		versionChecker: vc,
 	}
 }
@@ -583,6 +586,122 @@ func (h *UpdateHandler) HandleDownloadReleaseAuto(w http.ResponseWriter, r *http
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// HandleDownloadCustom handles POST /api/agent/download-custom.
+// Downloads agent binaries from the operator-configured base URL (Settings →
+// Agents → "Agent update URL") instead of GitHub — for forks that host their own
+// agent builds. The base URL is read from settings (not the request), and the
+// per-platform file name follows the convention klever-agent-<os>-<arch>
+// (with .exe on windows), e.g. https://my.site/agents/klever-agent-linux-amd64.
+func (h *UpdateHandler) HandleDownloadCustom(w http.ResponseWriter, r *http.Request) {
+	baseURL := ""
+	if h.settingsStore != nil {
+		baseURL, _ = h.settingsStore.Get("agent_update_url")
+	}
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "set an Agent update URL in Settings → Agents first"})
+		return
+	}
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Agent update URL must start with http:// or https://"})
+		return
+	}
+
+	// Version label for the stored binary: an explicit setting, else the
+	// dashboard's own version (agents are expected to match the dashboard).
+	ver := ""
+	if h.settingsStore != nil {
+		ver, _ = h.settingsStore.Get("agent_update_version")
+	}
+	ver = strings.TrimSpace(ver)
+	if ver == "" {
+		ver = version.Get().Version
+	}
+	if ver == "" || ver == "dev" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "set an Agent update version in Settings → Agents (dashboard version is unset)"})
+		return
+	}
+
+	// Which OS/arch combos to fetch — from registered servers, defaulting to
+	// linux/amd64 so binaries can be staged before any agent registers.
+	servers, err := h.serverStore.List()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	needed := map[string]bool{}
+	for _, srv := range servers {
+		osName, arch := parseOSArch(srv.OSInfo)
+		needed[osName+"/"+arch] = true
+	}
+	if len(needed) == 0 {
+		needed["linux/amd64"] = true
+	}
+
+	// Cap and same-host-restrict redirects so a compromised/redirecting host
+	// can't bounce the dashboard to an internal address (SSRF hardening).
+	client := &http.Client{
+		Timeout: 5 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			if req.URL.Host != via[0].URL.Host {
+				return fmt.Errorf("cross-host redirect to %s blocked", req.URL.Host)
+			}
+			return nil
+		},
+	}
+	base := strings.TrimRight(baseURL, "/")
+
+	type dlResult struct {
+		OS      string `json:"os"`
+		Arch    string `json:"arch"`
+		Success bool   `json:"success"`
+		Size    int64  `json:"size,omitempty"`
+		Error   string `json:"error,omitempty"`
+	}
+	var results []dlResult
+
+	for combo := range needed {
+		parts := strings.SplitN(combo, "/", 2)
+		osName, arch := parts[0], parts[1]
+		filename := fmt.Sprintf("klever-agent-%s-%s", osName, arch)
+		if osName == "windows" {
+			filename += ".exe"
+		}
+		url := base + "/" + filename
+
+		resp, err := client.Get(url)
+		if err != nil {
+			results = append(results, dlResult{OS: osName, Arch: arch, Error: err.Error()})
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 200<<20))
+		status := resp.StatusCode
+		_ = resp.Body.Close()
+		if status != http.StatusOK {
+			results = append(results, dlResult{OS: osName, Arch: arch, Error: fmt.Sprintf("GET %s: HTTP %d", url, status)})
+			continue
+		}
+		if readErr != nil {
+			results = append(results, dlResult{OS: osName, Arch: arch, Error: readErr.Error()})
+			continue
+		}
+		if len(data) == 0 {
+			results = append(results, dlResult{OS: osName, Arch: arch, Error: "downloaded file is empty"})
+			continue
+		}
+		if _, err := h.updateStore.Store(ver, osName, arch, data); err != nil {
+			results = append(results, dlResult{OS: osName, Arch: arch, Error: err.Error()})
+			continue
+		}
+		results = append(results, dlResult{OS: osName, Arch: arch, Success: true, Size: int64(len(data))})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"version": ver, "results": results})
 }
 
 func sha256hex(data []byte) string {
