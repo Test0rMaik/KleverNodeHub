@@ -231,7 +231,7 @@
                         <div class="setting-row">
                             <div>
                                 <div class="setting-label">Agent update URL</div>
-                                <div class="setting-desc">Base URL hosting your agent builds (this fork). Place files named <code>klever-agent-&lt;os&gt;-&lt;arch&gt;</code> (e.g. <code>klever-agent-linux-amd64</code>, <code>.exe</code> for windows). Used by "Download from custom source" in the Agent Update dialog.</div>
+                                <div class="setting-desc">Where your agent builds are hosted (this fork). Accepts: a <strong>direct file URL</strong> (e.g. <code>https://my.site/klever-agent-linux</code>) if all your servers share one platform; a <strong>template</strong> with <code>{os}</code>/<code>{arch}</code> (e.g. <code>https://my.site/klever-agent-{os}-{arch}</code>); or a <strong>base URL ending in /</strong> (then it appends <code>klever-agent-&lt;os&gt;-&lt;arch&gt;</code>, <code>.exe</code> on windows). Used by "Download from custom source" in the Agent Update dialog.</div>
                             </div>
                             <input class="form-input" id="s-agent_update_url" type="text" placeholder="https://my.site/agents/">
                         </div>
