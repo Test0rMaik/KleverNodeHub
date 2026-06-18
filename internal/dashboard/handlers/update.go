@@ -654,7 +654,14 @@ func (h *UpdateHandler) HandleDownloadCustom(w http.ResponseWriter, r *http.Requ
 			return nil
 		},
 	}
-	base := strings.TrimRight(baseURL, "/")
+	// A direct file URL (no placeholders, no trailing slash) can only serve one
+	// platform — reject if servers span several.
+	if isDirectAgentURL(baseURL) && len(needed) > 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "your servers run multiple OS/arch; use {os} and {arch} placeholders in the Agent update URL (e.g. .../klever-agent-{os}-{arch}) or a base URL ending in /",
+		})
+		return
+	}
 
 	type dlResult struct {
 		OS      string `json:"os"`
@@ -668,11 +675,7 @@ func (h *UpdateHandler) HandleDownloadCustom(w http.ResponseWriter, r *http.Requ
 	for combo := range needed {
 		parts := strings.SplitN(combo, "/", 2)
 		osName, arch := parts[0], parts[1]
-		filename := fmt.Sprintf("klever-agent-%s-%s", osName, arch)
-		if osName == "windows" {
-			filename += ".exe"
-		}
-		url := base + "/" + filename
+		url := agentBinaryURL(baseURL, osName, arch)
 
 		resp, err := client.Get(url)
 		if err != nil {
@@ -702,6 +705,33 @@ func (h *UpdateHandler) HandleDownloadCustom(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"version": ver, "results": results})
+}
+
+// isDirectAgentURL reports whether the setting is a direct file URL (no
+// {os}/{arch} placeholders and not a base URL ending in "/").
+func isDirectAgentURL(setting string) bool {
+	if strings.Contains(setting, "{os}") || strings.Contains(setting, "{arch}") {
+		return false
+	}
+	return !strings.HasSuffix(setting, "/")
+}
+
+// agentBinaryURL resolves the download URL for one os/arch from the configured
+// setting, supporting three forms: a {os}/{arch} template, a base URL ending in
+// "/" (appends klever-agent-<os>-<arch>, .exe on windows), or a direct file URL.
+func agentBinaryURL(setting, osName, arch string) string {
+	if strings.Contains(setting, "{os}") || strings.Contains(setting, "{arch}") {
+		r := strings.ReplaceAll(setting, "{os}", osName)
+		return strings.ReplaceAll(r, "{arch}", arch)
+	}
+	if isDirectAgentURL(setting) {
+		return setting
+	}
+	fn := fmt.Sprintf("klever-agent-%s-%s", osName, arch)
+	if osName == "windows" {
+		fn += ".exe"
+	}
+	return strings.TrimRight(setting, "/") + "/" + fn
 }
 
 func sha256hex(data []byte) string {
