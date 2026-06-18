@@ -517,6 +517,24 @@ func (h *UpdateHandler) HandleDownloadReleaseAuto(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Forks host their own agent builds: if an Agent update URL is configured,
+	// download from there (using the requested tag as the version label) instead
+	// of GitHub releases — so the "Update all agents" banner works on a fork.
+	if h.settingsStore != nil {
+		if base, _ := h.settingsStore.Get("agent_update_url"); strings.TrimSpace(base) != "" {
+			base = strings.TrimSpace(base)
+			if isDirectAgentURL(base) && len(needed) > 1 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": "your servers run multiple OS/arch; use {os} and {arch} placeholders in the Agent update URL or a base URL ending in /",
+				})
+				return
+			}
+			results := h.downloadCustomBinaries(base, req.Tag, needed)
+			writeJSON(w, http.StatusOK, map[string]any{"version": req.Tag, "source": "custom", "results": results})
+			return
+		}
+	}
+
 	// Fetch releases to find the matching tag
 	releases, err := h.versionChecker.FetchReleases(20)
 	if err != nil {
@@ -640,6 +658,32 @@ func (h *UpdateHandler) HandleDownloadCustom(w http.ResponseWriter, r *http.Requ
 		needed["linux/amd64"] = true
 	}
 
+	// A direct file URL (no placeholders, no trailing slash) can only serve one
+	// platform — reject if servers span several.
+	if isDirectAgentURL(baseURL) && len(needed) > 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "your servers run multiple OS/arch; use {os} and {arch} placeholders in the Agent update URL (e.g. .../klever-agent-{os}-{arch}) or a base URL ending in /",
+		})
+		return
+	}
+
+	results := h.downloadCustomBinaries(baseURL, ver, needed)
+	writeJSON(w, http.StatusOK, map[string]any{"version": ver, "results": results})
+}
+
+// agentDLResult reports one per-platform download outcome.
+type agentDLResult struct {
+	OS      string `json:"os"`
+	Arch    string `json:"arch"`
+	Success bool   `json:"success"`
+	Size    int64  `json:"size,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// downloadCustomBinaries fetches an agent binary per needed os/arch from the
+// operator's base URL and stores each under ver. Shared by the explicit
+// "download from custom source" action and the update-all flow.
+func (h *UpdateHandler) downloadCustomBinaries(baseURL, ver string, needed map[string]bool) []agentDLResult {
 	// Cap and same-host-restrict redirects so a compromised/redirecting host
 	// can't bounce the dashboard to an internal address (SSRF hardening).
 	client := &http.Client{
@@ -654,24 +698,8 @@ func (h *UpdateHandler) HandleDownloadCustom(w http.ResponseWriter, r *http.Requ
 			return nil
 		},
 	}
-	// A direct file URL (no placeholders, no trailing slash) can only serve one
-	// platform — reject if servers span several.
-	if isDirectAgentURL(baseURL) && len(needed) > 1 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "your servers run multiple OS/arch; use {os} and {arch} placeholders in the Agent update URL (e.g. .../klever-agent-{os}-{arch}) or a base URL ending in /",
-		})
-		return
-	}
 
-	type dlResult struct {
-		OS      string `json:"os"`
-		Arch    string `json:"arch"`
-		Success bool   `json:"success"`
-		Size    int64  `json:"size,omitempty"`
-		Error   string `json:"error,omitempty"`
-	}
-	var results []dlResult
-
+	var results []agentDLResult
 	for combo := range needed {
 		parts := strings.SplitN(combo, "/", 2)
 		osName, arch := parts[0], parts[1]
@@ -679,32 +707,31 @@ func (h *UpdateHandler) HandleDownloadCustom(w http.ResponseWriter, r *http.Requ
 
 		resp, err := client.Get(url)
 		if err != nil {
-			results = append(results, dlResult{OS: osName, Arch: arch, Error: err.Error()})
+			results = append(results, agentDLResult{OS: osName, Arch: arch, Error: err.Error()})
 			continue
 		}
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 200<<20))
 		status := resp.StatusCode
 		_ = resp.Body.Close()
 		if status != http.StatusOK {
-			results = append(results, dlResult{OS: osName, Arch: arch, Error: fmt.Sprintf("GET %s: HTTP %d", url, status)})
+			results = append(results, agentDLResult{OS: osName, Arch: arch, Error: fmt.Sprintf("GET %s: HTTP %d", url, status)})
 			continue
 		}
 		if readErr != nil {
-			results = append(results, dlResult{OS: osName, Arch: arch, Error: readErr.Error()})
+			results = append(results, agentDLResult{OS: osName, Arch: arch, Error: readErr.Error()})
 			continue
 		}
 		if len(data) == 0 {
-			results = append(results, dlResult{OS: osName, Arch: arch, Error: "downloaded file is empty"})
+			results = append(results, agentDLResult{OS: osName, Arch: arch, Error: "downloaded file is empty"})
 			continue
 		}
 		if _, err := h.updateStore.Store(ver, osName, arch, data); err != nil {
-			results = append(results, dlResult{OS: osName, Arch: arch, Error: err.Error()})
+			results = append(results, agentDLResult{OS: osName, Arch: arch, Error: err.Error()})
 			continue
 		}
-		results = append(results, dlResult{OS: osName, Arch: arch, Success: true, Size: int64(len(data))})
+		results = append(results, agentDLResult{OS: osName, Arch: arch, Success: true, Size: int64(len(data))})
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"version": ver, "results": results})
+	return results
 }
 
 // isDirectAgentURL reports whether the setting is a direct file URL (no

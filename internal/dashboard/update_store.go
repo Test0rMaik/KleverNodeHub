@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +43,14 @@ func NewUpdateStore(dataDir string) *UpdateStore {
 
 // Store saves an agent binary to disk and records its metadata.
 func (s *UpdateStore) Store(version, osName, arch string, data []byte) (*AgentBinaryInfo, error) {
+	// version/os/arch become part of the on-disk filename, so reject anything
+	// that could escape the storage directory (path traversal).
+	for _, p := range []string{version, osName, arch} {
+		if p == "" || strings.ContainsAny(p, `/\`) || strings.Contains(p, "..") {
+			return nil, fmt.Errorf("invalid binary identifier %q", p)
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
