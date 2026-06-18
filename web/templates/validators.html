@@ -172,6 +172,7 @@
     <script>
     (async function() {
         await API.refresh();
+        applyElectTabs();
         loadValidators();
         loadElections();
         setInterval(loadValidators, 6000);
@@ -188,16 +189,31 @@
     }
 
     var LINE_COLORS = ['#f5a11a', '#57b8ff', '#22c55e', '#a855f7', '#ff6b5d', '#fbbf24', '#34d399', '#f472b6', '#60a5fa', '#c084fc'];
-    var electMode = 'total';
     var lastElectData = null;
     var blsToName = {};
 
-    function setElectMode(mode) {
-        electMode = mode;
+    function getElectMode() {
+        try {
+            var m = localStorage.getItem('vm_elect_mode');
+            if (m === 'total' || m === 'individual') return m;
+        } catch (e) {}
+        return 'total';
+    }
+    var electMode = getElectMode();
+
+    // applyElectTabs colours the active tab (accent) vs inactive (ghost).
+    function applyElectTabs() {
         var total = document.getElementById('ec-tab-total');
         var indiv = document.getElementById('ec-tab-individual');
-        total.className = 'btn btn-sm' + (mode === 'total' ? '' : ' btn-ghost');
-        indiv.className = 'btn btn-sm' + (mode === 'individual' ? '' : ' btn-ghost');
+        if (!total || !indiv) return;
+        total.className = 'btn btn-sm ' + (electMode === 'total' ? 'btn-primary' : 'btn-ghost');
+        indiv.className = 'btn btn-sm ' + (electMode === 'individual' ? 'btn-primary' : 'btn-ghost');
+    }
+
+    function setElectMode(mode) {
+        electMode = mode;
+        try { localStorage.setItem('vm_elect_mode', mode); } catch (e) {}
+        applyElectTabs();
         renderElectionChart();
     }
 
@@ -284,7 +300,9 @@
         var x = function(i) { return padL + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW); };
         var y = function(v) { return padT + plotH - (v / max) * plotH; };
 
-        var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;">';
+        // Cap the rendered size: width 100% up to a max so the SVG (and its
+        // viewBox-scaled text) can't blow up to full-monitor height.
+        var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" style="display:block;width:100%;max-width:960px;height:auto;margin:0 auto;">';
         // Y gridlines + labels at 0, max/2, max.
         [0, 0.5, 1].forEach(function(f) {
             var val = Math.round(max * f);

@@ -365,15 +365,15 @@ func TestClient_ValidatorsPaginates(t *testing.T) {
 	}
 }
 
-// TestMonitor_CountsElectionsWithFreshStatsOnEpochChange guards the bug where a
-// new epoch was counted against a STALE validator set: a validator that only
-// became elected in the new epoch was missed (count 0) while another was double
-// counted. The fix forces a validator-stats refresh on epoch change.
-func TestMonitor_CountsElectionsWithFreshStatsOnEpochChange(t *testing.T) {
+// TestMonitor_CountsElectionsFromBlockConsensus verifies the per-epoch election
+// count comes from each epoch's block consensus group (the elected set), so an
+// epoch with N elected validators credits exactly those N — never a stale
+// validator-list set (which previously over-counted at epoch boundaries).
+func TestMonitor_CountsElectionsFromBlockConsensus(t *testing.T) {
 	var mu sync.Mutex
 	epoch := uint64(100)
 	nonce := uint64(1000)
-	ddElected := false
+	consensus := `["aa"]` // epoch 100: only aa in the elected set
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
@@ -382,23 +382,13 @@ func TestMonitor_CountsElectionsWithFreshStatsOnEpochChange(t *testing.T) {
 			return
 		}
 		mu.Lock()
-		e, n := epoch, nonce
+		e, n, c := epoch, nonce, consensus
 		mu.Unlock()
-		_, _ = fmt.Fprintf(w, `{"data":{"blocks":[{"nonce":%d,"epoch":%d,"producerBLS":"aa","validators":["aa"]}]}}`, n, e)
+		_, _ = fmt.Fprintf(w, `{"data":{"blocks":[{"nonce":%d,"epoch":%d,"producerBLS":"aa","validators":%s}]}}`, n, e, c)
 	})
+	// The validator list no longer drives counting; keep it minimal.
 	mux.HandleFunc("/v1.0/validator/list", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("page") != "1" {
-			_, _ = fmt.Fprint(w, `{"data":{"validators":[]}}`)
-			return
-		}
-		mu.Lock()
-		dd := ddElected
-		mu.Unlock()
-		ddList := "waiting"
-		if dd {
-			ddList = "elected"
-		}
-		_, _ = fmt.Fprintf(w, `{"data":{"validators":[{"blsPublicKey":"aa","list":"elected"},{"blsPublicKey":"dd","list":%q}]}}`, ddList)
+		_, _ = fmt.Fprint(w, `{"data":{"validators":[]}}`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -410,32 +400,28 @@ func TestMonitor_CountsElectionsWithFreshStatsOnEpochChange(t *testing.T) {
 	m := NewMonitor(client, nodes, "mainnet", 1, 0)
 	m.SetElectionStore(newFakeKV())
 
-	// Epoch 100: only aa elected.
+	// Epoch 100: consensus {aa}.
 	m.tick(context.Background())
-	// Epoch 101: dd is now elected too.
+	// Epoch 101: consensus {aa, dd}.
 	mu.Lock()
-	epoch, nonce, ddElected = 101, 1001, true
+	epoch, nonce, consensus = 101, 1001, `["aa","dd"]`
 	mu.Unlock()
 	m.tick(context.Background())
+	m.tick(context.Background()) // same epoch again must not double-count
 
-	hist := m.ElectionHistory()
-	counts := hist.History[hist.CurrentMonth]
+	counts := m.ElectionHistory().History[m.ElectionHistory().CurrentMonth]
 	if counts["aa"] != 2 {
-		t.Errorf("aa elections = %d, want 2 (elected both epochs)", counts["aa"])
+		t.Errorf("aa elections = %d, want 2 (in consensus both epochs)", counts["aa"])
 	}
 	if counts["dd"] != 1 {
-		t.Errorf("dd elections = %d, want 1 (counted on the epoch it became elected)", counts["dd"])
+		t.Errorf("dd elections = %d, want 1 (only in epoch 101's consensus)", counts["dd"])
 	}
 }
 
-// TestMonitor_DefersElectionCountWhenStatsStale guards against counting a new
-// epoch against stale validator data when the stats fetch fails on the
-// epoch-boundary tick (e.g. a 429). The epoch must be counted exactly once,
-// after the stats refresh succeeds — never skipped, never doubled.
-func TestMonitor_DefersElectionCountWhenStatsStale(t *testing.T) {
-	var mu sync.Mutex
-	failValidators := false
-
+// TestMonitor_CountsFromBlocksDespiteValidatorListFailure: because counting uses
+// block consensus data, a failing validator-list endpoint (e.g. rate-limited)
+// doesn't block or corrupt the election count.
+func TestMonitor_CountsFromBlocksDespiteValidatorListFailure(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") != "1" {
@@ -445,20 +431,7 @@ func TestMonitor_DefersElectionCountWhenStatsStale(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"data":{"blocks":[{"nonce":2000,"epoch":200,"producerBLS":"aa","validators":["aa"]}]}}`)
 	})
 	mux.HandleFunc("/v1.0/validator/list", func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		fail := failValidators
-		mu.Unlock()
-		if fail {
-			// Any fetch failure exercises the defer path; a 404 avoids the
-			// client's 429/503 backoff so the test stays fast.
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if r.URL.Query().Get("page") != "1" {
-			_, _ = fmt.Fprint(w, `{"data":{"validators":[]}}`)
-			return
-		}
-		_, _ = fmt.Fprint(w, `{"data":{"validators":[{"blsPublicKey":"aa","list":"elected"}]}}`)
+		w.WriteHeader(http.StatusNotFound) // validator list unavailable
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -468,23 +441,9 @@ func TestMonitor_DefersElectionCountWhenStatsStale(t *testing.T) {
 	m := NewMonitor(client, nodes, "mainnet", 1, 0)
 	m.SetElectionStore(newFakeKV())
 
-	// Epoch 200 first observed while the validator endpoint is failing.
-	mu.Lock()
-	failValidators = true
-	mu.Unlock()
 	m.tick(context.Background())
-	if got := m.ElectionHistory().History[m.ElectionHistory().CurrentMonth]["aa"]; got != 0 {
-		t.Fatalf("count with stale stats = %d, want 0 (deferred)", got)
-	}
-
-	// Stats recover — the same epoch is now counted, exactly once.
-	mu.Lock()
-	failValidators = false
-	mu.Unlock()
-	m.tick(context.Background())
-	m.tick(context.Background()) // a further tick must not double-count
 	if got := m.ElectionHistory().History[m.ElectionHistory().CurrentMonth]["aa"]; got != 1 {
-		t.Errorf("count after recovery = %d, want 1 (counted once)", got)
+		t.Errorf("aa elections = %d, want 1 (counted from block consensus)", got)
 	}
 }
 

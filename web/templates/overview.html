@@ -409,6 +409,15 @@
                     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
                         <h4 style="margin:0 0 12px;color:var(--text-secondary);font-size:0.85rem;text-transform:uppercase;letter-spacing:0.5px;">Expert Settings</h4>
 
+                        <!-- Custom source (this fork hosts its own agent builds) -->
+                        <div style="margin-bottom:16px;">
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                                <button class="btn btn-sm btn-primary" id="custom-download-btn" onclick="downloadAgentFromCustomSource()">Download from custom source</button>
+                                <span id="custom-download-status" class="text-sm text-muted"></span>
+                            </div>
+                            <div class="text-sm text-muted" style="margin-top:6px;">Fetches agent binaries from the <strong>Agent update URL</strong> set in <a href="/settings">Settings → Agents</a>, then push them with "Update" below.</div>
+                        </div>
+
                         <!-- Available Versions (Release Dropdown) -->
                         <div style="margin-bottom:16px;">
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -2369,6 +2378,46 @@
                 showToast('Download error: ' + e.message, 'error');
                 btn.disabled = false;
                 btn.textContent = 'Download';
+            }
+        }
+
+        async function downloadAgentFromCustomSource() {
+            var btn = document.getElementById('custom-download-btn');
+            var statusEl = document.getElementById('custom-download-status');
+            btn.disabled = true;
+            btn.textContent = 'Downloading...';
+            statusEl.textContent = '';
+            try {
+                var resp = await API.postJSON('/api/agent/download-custom', {});
+                // API.postJSON returns {ok, status, data}.
+                var d = resp ? resp.data : null;
+                var status = resp ? resp.status : 0;
+                if (!resp || status >= 400) {
+                    var msg = (d && d.error) || 'Download failed';
+                    showToast(msg, 'error');
+                    statusEl.style.color = 'var(--error)';
+                    statusEl.textContent = msg; // textContent: server error strings are never HTML
+                } else {
+                    var results = (d && d.results) || [];
+                    var ok = results.filter(function(r) { return r.success; }).length;
+                    var fail = results.length - ok;
+                    var ver = (d && d.version) ? d.version : '';
+                    if (ok > 0) {
+                        showToast('Downloaded ' + ok + ' agent binary(ies)' + (ver ? ' as ' + ver : '') + (fail ? ', ' + fail + ' failed' : ''), fail ? 'error' : 'success');
+                    } else {
+                        showToast('No binaries downloaded' + (fail ? ' (' + fail + ' failed)' : ''), 'error');
+                    }
+                    statusEl.style.color = '';
+                    statusEl.textContent = results.map(function(r) {
+                        return r.os + '/' + r.arch + ': ' + (r.success ? 'ok' : (r.error || 'failed'));
+                    }).join('  ·  ');
+                    await loadDownloadedVersions();
+                }
+            } catch (e) {
+                showToast('Download error: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Download from custom source';
             }
         }
 

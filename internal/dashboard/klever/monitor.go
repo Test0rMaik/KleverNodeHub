@@ -53,8 +53,9 @@ type KVStore interface {
 // blockRec is the compact per-block record kept in the rolling window.
 type blockRec struct {
 	nonce       uint64
+	epoch       uint64
 	producerBLS string              // normalized
-	signers     map[string]struct{} // normalized consensus group
+	signers     map[string]struct{} // normalized consensus group (= elected set)
 	hasSigners  bool
 }
 
@@ -81,7 +82,6 @@ type Monitor struct {
 	mu         sync.RWMutex
 	have       map[uint64]blockRec
 	validators map[string]RawValidator // normalized BLS -> stats
-	statsEpoch uint64                  // chain epoch the validator stats reflect
 	headNonce  uint64
 	epoch      uint64
 	ticks      int
@@ -166,8 +166,14 @@ func (m *Monitor) ensureElectionsLoaded() {
 }
 
 // updateElectionsLocked counts one election per elected managed validator when a
-// new epoch is observed, into the current calendar month's bucket. Returns true
-// if the history changed and should be persisted. Caller holds m.mu.
+// new epoch is observed, into the current month's bucket. Returns true if the
+// history changed and should be persisted. Caller holds m.mu.
+//
+// The elected set is taken from the block consensus group (the per-block
+// `validators` array) of this epoch's blocks — not the validator list. The
+// validator list can still report the PREVIOUS epoch's elected set for a short
+// window after a boundary, which previously over-counted (e.g. an epoch with 1
+// elected validator credited 2). Block data is authoritative and lag-free.
 func (m *Monitor) updateElectionsLocked(month string, epoch uint64, managed []ManagedNode) bool {
 	if m.elect == nil {
 		return false
@@ -177,28 +183,40 @@ func (m *Monitor) updateElectionsLocked(month string, epoch uint64, managed []Ma
 		m.elect.CurrentMonth = month
 		dirty = true
 	}
-	// Only count a new epoch once the validator stats reflect it. Otherwise
-	// (e.g. the stats fetch failed on this epoch-boundary tick) defer without
-	// advancing LastEpoch, so the next tick retries rather than counting the
-	// epoch against stale data and skipping it forever.
-	if epoch > m.elect.LastEpoch && m.statsEpoch >= epoch {
-		bucket := m.elect.History[month]
-		if bucket == nil {
-			bucket = map[string]int{}
-			m.elect.History[month] = bucket
-		}
-		for _, node := range managed {
-			bls := normalizeBLS(node.BLS)
-			if bls == "" {
-				continue
-			}
-			if v, ok := m.validators[bls]; ok && v.List == "elected" {
-				bucket[bls]++
-			}
-		}
-		m.elect.LastEpoch = epoch
-		dirty = true
+	if epoch <= m.elect.LastEpoch {
+		return dirty
 	}
+
+	// Elected set for this epoch = union of the consensus groups of this epoch's
+	// blocks currently in the window (every block carries the full elected set).
+	elected := make(map[string]struct{})
+	for _, rec := range m.have {
+		if rec.epoch == epoch && rec.hasSigners {
+			for s := range rec.signers {
+				elected[s] = struct{}{}
+			}
+		}
+	}
+	if len(elected) == 0 {
+		return dirty // no consensus data for this epoch yet; count on a later tick
+	}
+
+	bucket := m.elect.History[month]
+	if bucket == nil {
+		bucket = map[string]int{}
+		m.elect.History[month] = bucket
+	}
+	for _, node := range managed {
+		bls := normalizeBLS(node.BLS)
+		if bls == "" {
+			continue
+		}
+		if _, ok := elected[bls]; ok {
+			bucket[bls]++
+		}
+	}
+	m.elect.LastEpoch = epoch
+	dirty = true
 	return dirty
 }
 
@@ -230,10 +248,11 @@ func (m *Monitor) Snapshot() *Snapshot {
 	return &Snapshot{Network: m.network, Window: m.window, Ready: false, Error: m.lastErr}
 }
 
-// blockChunk is how many blocks one block/list request fetches. The newest
-// chunk (page 1) covers the head plus several ticks of new blocks; older pages
-// only get fetched while the window is still backfilling.
-const blockChunk = 50
+// blockChunk is how many blocks one block/list request fetches. The API caps a
+// page at 100 and the window is 100, so a single request covers the whole window
+// (no second page in steady state). Older pages are only fetched while the
+// window is still backfilling after startup.
+const blockChunk = 100
 
 func (m *Monitor) tick(ctx context.Context) {
 	// One batched call gets the newest chunk of blocks; blocks[0] is the head
@@ -316,7 +335,6 @@ func (m *Monitor) tick(ctx context.Context) {
 			}
 		}
 		m.validators = nv
-		m.statsEpoch = epoch // these stats reflect the current chain epoch
 	}
 	m.headNonce = head
 	m.epoch = epoch
@@ -511,6 +529,7 @@ func (m *Monitor) buildLocked(head uint64, managed []ManagedNode) *Snapshot {
 func toRec(blk *IndexerBlock) blockRec {
 	r := blockRec{
 		nonce:       blk.Nonce,
+		epoch:       blk.Epoch,
 		producerBLS: normalizeBLS(blk.ProducerBLS),
 	}
 	if len(blk.Validators) > 0 {

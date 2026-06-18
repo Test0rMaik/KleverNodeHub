@@ -35,6 +35,8 @@ var settingsCategories = map[string][]string{
 	"agents": {
 		"heartbeat_timeout_sec",
 		"agent_discovery_interval_sec",
+		"agent_update_url",
+		"agent_update_version",
 	},
 }
 
@@ -48,6 +50,8 @@ var settingsDefaults = map[string]string{
 	"notify_default_severity":      "warning",
 	"heartbeat_timeout_sec":        "120",
 	"agent_discovery_interval_sec": "300",
+	"agent_update_url":             "",
+	"agent_update_version":         "",
 }
 
 // HandleGetAll handles GET /api/settings — returns all settings grouped by category.

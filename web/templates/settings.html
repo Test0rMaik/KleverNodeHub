@@ -228,6 +228,20 @@
                             </div>
                             <input class="form-input" id="s-agent_discovery_interval_sec" type="number" min="60" max="3600">
                         </div>
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Agent update URL</div>
+                                <div class="setting-desc">Base URL hosting your agent builds (this fork). Place files named <code>klever-agent-&lt;os&gt;-&lt;arch&gt;</code> (e.g. <code>klever-agent-linux-amd64</code>, <code>.exe</code> for windows). Used by "Download from custom source" in the Agent Update dialog.</div>
+                            </div>
+                            <input class="form-input" id="s-agent_update_url" type="text" placeholder="https://my.site/agents/">
+                        </div>
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Agent update version</div>
+                                <div class="setting-desc">Version label recorded for the downloaded agent. Leave blank to use the dashboard's own version.</div>
+                            </div>
+                            <input class="form-input" id="s-agent_update_version" type="text" placeholder="(defaults to dashboard version)">
+                        </div>
                     </div>
                     <div class="section-actions">
                         <button class="btn btn-primary btn-sm" onclick="saveSection('agents')">Save</button>
@@ -251,7 +265,7 @@
             general: ['dashboard_name'],
             metrics: ['metrics_interval_sec', 'node_poll_interval_sec', 'hot_retention_days', 'archive_retention_days'],
             notifications: ['notify_default_severity'],
-            agents: ['heartbeat_timeout_sec', 'agent_discovery_interval_sec']
+            agents: ['heartbeat_timeout_sec', 'agent_discovery_interval_sec', 'agent_update_url', 'agent_update_version']
         };
 
         function toggleSidebar() {
