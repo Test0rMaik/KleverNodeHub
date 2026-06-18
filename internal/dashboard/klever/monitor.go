@@ -81,7 +81,9 @@ type Monitor struct {
 	mu         sync.RWMutex
 	have       map[uint64]blockRec
 	validators map[string]RawValidator // normalized BLS -> stats
-	overview   Overview
+	statsEpoch uint64                  // chain epoch the validator stats reflect
+	headNonce  uint64
+	epoch      uint64
 	ticks      int
 	lastErr    string
 	latest     *Snapshot
@@ -175,7 +177,11 @@ func (m *Monitor) updateElectionsLocked(month string, epoch uint64, managed []Ma
 		m.elect.CurrentMonth = month
 		dirty = true
 	}
-	if epoch > m.elect.LastEpoch {
+	// Only count a new epoch once the validator stats reflect it. Otherwise
+	// (e.g. the stats fetch failed on this epoch-boundary tick) defer without
+	// advancing LastEpoch, so the next tick retries rather than counting the
+	// epoch against stale data and skipping it forever.
+	if epoch > m.elect.LastEpoch && m.statsEpoch >= epoch {
 		bucket := m.elect.History[month]
 		if bucket == nil {
 			bucket = map[string]int{}
@@ -224,15 +230,27 @@ func (m *Monitor) Snapshot() *Snapshot {
 	return &Snapshot{Network: m.network, Window: m.window, Ready: false, Error: m.lastErr}
 }
 
+// blockChunk is how many blocks one block/list request fetches. The newest
+// chunk (page 1) covers the head plus several ticks of new blocks; older pages
+// only get fetched while the window is still backfilling.
+const blockChunk = 50
+
 func (m *Monitor) tick(ctx context.Context) {
-	ov, err := m.client.Overview(ctx)
+	// One batched call gets the newest chunk of blocks; blocks[0] is the head
+	// (nonce + epoch), so there's no separate node-API overview request.
+	newest, err := m.client.RecentBlocks(ctx, 1, blockChunk)
 	if err != nil {
 		m.recordError(err)
 		return
 	}
-	head := ov.Nonce
+	if len(newest) == 0 {
+		m.recordError(errString("block list returned no blocks"))
+		return
+	}
+	head := newest[0].Nonce
+	epoch := newest[0].Epoch
 	if head == 0 {
-		m.recordError(errString("chain overview returned head nonce 0"))
+		m.recordError(errString("block list head nonce 0"))
 		return
 	}
 
@@ -241,31 +259,38 @@ func (m *Monitor) tick(ctx context.Context) {
 		desiredStart = head - uint64(m.window) + 1
 	}
 
-	// Decide which block nonces we still need (newest first), and whether this
-	// tick should also refresh the validator stats.
+	m.ensureElectionsLoaded()
+
+	// Merge the newest chunk; decide whether to backfill older pages and whether
+	// to refresh validator stats (also forced on an epoch change so the election
+	// count and elected/jailed state are attributed with fresh data).
 	m.mu.Lock()
+	mergeBlocks(m.have, newest, desiredStart, head)
 	m.pruneLocked(desiredStart, head)
-	missing := make([]uint64, 0, m.maxPerTick)
-	for n := head; n >= desiredStart && len(missing) < m.maxPerTick; n-- {
-		if _, ok := m.have[n]; !ok {
-			missing = append(missing, n)
-		}
-		if n == 0 {
-			break
-		}
-	}
-	refreshStats := m.ticks%m.statsEvery == 0 || len(m.validators) == 0
+	missing := countMissing(m.have, desiredStart, head)
+	epochChanged := m.elect != nil && epoch > m.elect.LastEpoch
+	refreshStats := m.ticks%m.statsEvery == 0 || len(m.validators) == 0 || epochChanged
 	m.mu.Unlock()
 
-	// Fetch outside the lock.
-	fetched := make([]blockRec, 0, len(missing))
-	for _, n := range missing {
-		blk, err := m.client.BlockByNonce(ctx, n)
-		if err != nil {
-			log.Printf("validator-monitor: block %d: %v", n, err)
-			continue
+	// Backfill older pages only while the window has gaps (i.e. on startup),
+	// capped per tick so it fills gently over a few ticks.
+	var backfill []IndexerBlock
+	if missing > 0 {
+		neededPages := (m.window + blockChunk - 1) / blockChunk
+		for page := 2; page <= neededPages && page <= 1+m.maxPerTick; page++ {
+			older, err := m.client.RecentBlocks(ctx, page, blockChunk)
+			if err != nil {
+				log.Printf("validator-monitor: block list page %d: %v", page, err)
+				break
+			}
+			if len(older) == 0 {
+				break
+			}
+			backfill = append(backfill, older...)
+			if older[len(older)-1].Nonce <= desiredStart {
+				break
+			}
 		}
-		fetched = append(fetched, toRec(blk))
 	}
 
 	var vals []RawValidator
@@ -278,13 +303,10 @@ func (m *Monitor) tick(ctx context.Context) {
 	}
 
 	managed := m.nodes()
-	m.ensureElectionsLoaded()
 	month := time.Now().Format("2006-01")
 
 	m.mu.Lock()
-	for _, r := range fetched {
-		m.have[r.nonce] = r
-	}
+	mergeBlocks(m.have, backfill, desiredStart, head)
 	m.pruneLocked(desiredStart, head)
 	if vals != nil {
 		nv := make(map[string]RawValidator, len(vals))
@@ -294,11 +316,13 @@ func (m *Monitor) tick(ctx context.Context) {
 			}
 		}
 		m.validators = nv
+		m.statsEpoch = epoch // these stats reflect the current chain epoch
 	}
-	m.overview = *ov
+	m.headNonce = head
+	m.epoch = epoch
 	m.ticks++
 	m.lastErr = ""
-	electionsDirty := m.updateElectionsLocked(month, ov.EpochNumber, managed)
+	electionsDirty := m.updateElectionsLocked(month, epoch, managed)
 	m.latest = m.buildLocked(head, managed)
 	stats := m.validators
 	var electPayload []byte
@@ -313,6 +337,28 @@ func (m *Monitor) tick(ctx context.Context) {
 			log.Printf("validator-monitor: persist elections: %v", err)
 		}
 	}
+}
+
+// mergeBlocks records each block within [start, head] into the window map.
+func mergeBlocks(have map[uint64]blockRec, blocks []IndexerBlock, start, head uint64) {
+	for i := range blocks {
+		b := &blocks[i]
+		if b.Nonce < start || b.Nonce > head {
+			continue
+		}
+		have[b.Nonce] = toRec(b)
+	}
+}
+
+// countMissing returns how many nonces in [start, head] are absent from have.
+func countMissing(have map[uint64]blockRec, start, head uint64) int {
+	missing := 0
+	for n := start; n <= head; n++ {
+		if _, ok := have[n]; !ok {
+			missing++
+		}
+	}
+	return missing
 }
 
 // emitMetrics writes per-node validator metrics so the alert engine can fire
@@ -377,7 +423,7 @@ func (m *Monitor) buildLocked(head uint64, managed []ManagedNode) *Snapshot {
 	sort.Slice(nonces, func(i, j int) bool { return nonces[i] < nonces[j] })
 
 	snap := &Snapshot{
-		Epoch:     m.overview.EpochNumber,
+		Epoch:     m.epoch,
 		HeadNonce: head,
 		Window:    m.window,
 		Network:   m.network,
