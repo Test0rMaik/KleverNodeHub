@@ -174,14 +174,10 @@ func main() {
 	if kleverNetwork == "" {
 		kleverNetwork = "mainnet"
 	}
-	defAPIURL, defNodeURL := klever.DefaultAPIURLs(kleverNetwork)
+	defAPIURL, _ := klever.DefaultAPIURLs(kleverNetwork)
 	kleverAPIURL, _ := settingsStore.Get("klever_api_url")
 	if kleverAPIURL == "" {
 		kleverAPIURL = defAPIURL
-	}
-	kleverNodeURL, _ := settingsStore.Get("klever_node_url")
-	if kleverNodeURL == "" {
-		kleverNodeURL = defNodeURL
 	}
 	// Poll cadence is overridable (klever_poll_secs) so operators can back off
 	// further if their endpoint rate-limits; default 8s, floor 4s.
@@ -191,8 +187,9 @@ func main() {
 			kleverPollSecs = n
 		}
 	}
-	// maxInflight kept low (2) to stay under Klever's per-IP rate limit.
-	kleverClient := klever.NewClient(kleverAPIURL, kleverNodeURL, 2)
+	// maxInflight kept low (2) to stay under Klever's per-IP rate limit. The
+	// monitor talks only to the indexer API (blocks + validators) now.
+	kleverClient := klever.NewClient(kleverAPIURL, 2)
 	validatorMonitor := klever.NewMonitor(kleverClient, func() []klever.ManagedNode {
 		nodes, err := nodeStore.ListAll("")
 		if err != nil {

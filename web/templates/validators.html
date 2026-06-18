@@ -137,13 +137,17 @@
                 </div>
 
                 <div class="card mb-16">
-                    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
                         <h3>Elections per Month</h3>
-                        <span class="text-sm text-muted">epochs your validators were elected, by month</span>
+                        <div style="display:flex;gap:6px;">
+                            <button id="ec-tab-total" class="btn btn-sm" onclick="setElectMode('total')">Total</button>
+                            <button id="ec-tab-individual" class="btn btn-sm btn-ghost" onclick="setElectMode('individual')">Individual</button>
+                        </div>
                     </div>
-                    <div id="vm-elect-chart" style="display:flex;align-items:flex-end;gap:10px;height:180px;padding:12px 4px 0;overflow-x:auto;">
-                        <div class="text-sm text-muted" style="margin:auto;">Loading…</div>
+                    <div id="vm-elect-chart" style="padding:8px 4px 0;min-height:200px;">
+                        <div class="text-sm text-muted" style="padding:60px 0;text-align:center;">Loading…</div>
                     </div>
+                    <div id="vm-elect-legend" style="display:flex;flex-wrap:wrap;gap:12px;padding:10px 4px 0;"></div>
                 </div>
 
                 <div class="card">
@@ -183,6 +187,20 @@
         return (MONTH_NAMES[m - 1] || ym) + " '" + parts[0].slice(2);
     }
 
+    var LINE_COLORS = ['#f5a11a', '#57b8ff', '#22c55e', '#a855f7', '#ff6b5d', '#fbbf24', '#34d399', '#f472b6', '#60a5fa', '#c084fc'];
+    var electMode = 'total';
+    var lastElectData = null;
+    var blsToName = {};
+
+    function setElectMode(mode) {
+        electMode = mode;
+        var total = document.getElementById('ec-tab-total');
+        var indiv = document.getElementById('ec-tab-individual');
+        total.className = 'btn btn-sm' + (mode === 'total' ? '' : ' btn-ghost');
+        indiv.className = 'btn btn-sm' + (mode === 'individual' ? '' : ' btn-ghost');
+        renderElectionChart();
+    }
+
     async function loadElections() {
         var data;
         try {
@@ -191,37 +209,105 @@
             return;
         }
         if (!data) return;
-        renderElectionChart(data);
+        lastElectData = data;
+        renderElectionChart();
     }
 
-    function renderElectionChart(data) {
+    function renderElectionChart() {
         var chart = document.getElementById('vm-elect-chart');
+        var legend = document.getElementById('vm-elect-legend');
+        legend.innerHTML = '';
+        var data = lastElectData;
+        if (!data) return;
         var history = data.history || {};
-        // Sum per month across all managed validators.
         var months = Object.keys(history).sort();
-        var totals = months.map(function(ym) {
-            var counts = history[ym] || {};
-            var sum = 0;
-            for (var bls in counts) { if (counts.hasOwnProperty(bls)) sum += counts[bls]; }
-            return { ym: ym, total: sum };
-        });
-        // Keep the most recent 12 months.
-        if (totals.length > 12) totals = totals.slice(totals.length - 12);
-        if (totals.length === 0) {
-            chart.innerHTML = '<div class="text-sm text-muted" style="margin:auto;">No election history yet — it builds up as epochs pass.</div>';
+        if (months.length > 12) months = months.slice(months.length - 12);
+        if (months.length === 0) {
+            chart.innerHTML = '<div class="text-sm text-muted" style="padding:60px 0;text-align:center;">No election history yet — it builds up as epochs pass.</div>';
             return;
         }
-        var max = totals.reduce(function(mx, t) { return Math.max(mx, t.total); }, 0) || 1;
-        chart.innerHTML = totals.map(function(t) {
-            var pct = Math.round((t.total / max) * 100);
-            var isCurrent = t.ym === data.current_month;
-            var barColor = isCurrent ? 'var(--accent)' : 'rgba(87,184,255,0.55)';
-            return '<div style="flex:1 1 0;min-width:34px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;gap:6px;" title="' + esc(monthLabel(t.ym)) + ': ' + fmtInt(t.total) + ' elections">' +
-                '<div style="font-size:11px;color:var(--text-secondary);font-variant-numeric:tabular-nums;">' + fmtInt(t.total) + '</div>' +
-                '<div style="width:70%;background:' + barColor + ';border-radius:4px 4px 0 0;height:' + pct + '%;min-height:2px;transition:height .3s;"></div>' +
-                '<div style="font-size:10px;color:var(--text-muted);white-space:nowrap;">' + esc(monthLabel(t.ym)) + '</div>' +
-                '</div>';
-        }).join('');
+
+        // Build the series to plot.
+        var series = [];
+        if (electMode === 'total') {
+            series.push({
+                name: 'Total',
+                color: LINE_COLORS[0],
+                values: months.map(function(ym) {
+                    var c = history[ym] || {}, s = 0;
+                    for (var b in c) { if (c.hasOwnProperty(b)) s += c[b]; }
+                    return s;
+                })
+            });
+        } else {
+            // One line per validator (BLS) seen in the window.
+            var blsSet = {};
+            months.forEach(function(ym) {
+                var c = history[ym] || {};
+                for (var b in c) { if (c.hasOwnProperty(b)) blsSet[b] = true; }
+            });
+            var blsList = Object.keys(blsSet).sort(function(a, b) {
+                return (blsToName[a] || a).toLowerCase().localeCompare((blsToName[b] || b).toLowerCase());
+            });
+            blsList.forEach(function(bls, i) {
+                series.push({
+                    name: blsToName[bls] || (bls.slice(0, 8) + '…'),
+                    color: LINE_COLORS[i % LINE_COLORS.length],
+                    values: months.map(function(ym) { return (history[ym] || {})[bls] || 0; })
+                });
+            });
+            if (series.length === 0) {
+                chart.innerHTML = '<div class="text-sm text-muted" style="padding:60px 0;text-align:center;">No per-validator data yet.</div>';
+                return;
+            }
+        }
+
+        chart.innerHTML = buildLineChart(months, series);
+        // Legend (skip for single Total line).
+        if (electMode === 'individual') {
+            legend.innerHTML = series.map(function(s) {
+                return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);">' +
+                    '<span style="width:12px;height:3px;border-radius:2px;background:' + s.color + ';display:inline-block;"></span>' +
+                    esc(s.name) + '</span>';
+            }).join('');
+        }
+    }
+
+    // buildLineChart renders a responsive inline-SVG line chart. months is an
+    // array of "YYYY-MM"; each series has {name,color,values[]} aligned to months.
+    function buildLineChart(months, series) {
+        var W = 720, H = 220, padL = 36, padR = 12, padT = 12, padB = 28;
+        var plotW = W - padL - padR, plotH = H - padT - padB;
+        var max = 1;
+        series.forEach(function(s) { s.values.forEach(function(v) { if (v > max) max = v; }); });
+        var n = months.length;
+        var x = function(i) { return padL + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW); };
+        var y = function(v) { return padT + plotH - (v / max) * plotH; };
+
+        var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;">';
+        // Y gridlines + labels at 0, max/2, max.
+        [0, 0.5, 1].forEach(function(f) {
+            var val = Math.round(max * f);
+            var yy = y(val);
+            svg += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W - padR) + '" y2="' + yy + '" stroke="rgba(123,146,191,0.15)" stroke-width="1"/>';
+            svg += '<text x="' + (padL - 6) + '" y="' + (yy + 3) + '" text-anchor="end" font-size="10" fill="#66738f">' + val + '</text>';
+        });
+        // X month labels (thin out if crowded).
+        var step = Math.ceil(n / 12);
+        for (var i = 0; i < n; i++) {
+            if (i % step !== 0 && i !== n - 1) continue;
+            svg += '<text x="' + x(i) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="10" fill="#66738f">' + esc(monthLabel(months[i])) + '</text>';
+        }
+        // Series polylines + points.
+        series.forEach(function(s) {
+            var pts = s.values.map(function(v, i) { return x(i).toFixed(1) + ',' + y(v).toFixed(1); }).join(' ');
+            svg += '<polyline points="' + pts + '" fill="none" stroke="' + s.color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+            s.values.forEach(function(v, i) {
+                svg += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="2.5" fill="' + s.color + '"><title>' + esc(s.name) + ' · ' + esc(monthLabel(months[i])) + ': ' + fmtInt(v) + '</title></circle>';
+            });
+        });
+        svg += '</svg>';
+        return svg;
     }
 
     function esc(s) {
@@ -284,6 +370,11 @@
         }
 
         var vals = snap.validators || [];
+        // Keep BLS -> name for the individual-line chart legend (normalize to
+        // match the elections endpoint's lowercased, 0x-stripped keys).
+        vals.forEach(function(v) {
+            if (v.bls) blsToName[String(v.bls).toLowerCase().replace(/^0x/, '')] = v.name;
+        });
         renderTable(vals);
         renderTimeline(vals);
     }

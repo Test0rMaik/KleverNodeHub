@@ -28,32 +28,30 @@ func DefaultAPIURLs(network string) (apiURL, nodeURL string) {
 // we smooth bursts — especially the initial block backfill — to stay under it.
 const minRequestInterval = 175 * time.Millisecond
 
-// Client is a thin HTTP client over the Klever indexer + node APIs.
+// Client is a thin HTTP client over the Klever indexer API.
 //
 // Requests are both capped in concurrency (semaphore) and paced to a minimum
 // interval, because Klever rate-limits per IP and the monitor shares that
 // budget across all its calls.
 type Client struct {
-	http    *http.Client
-	apiURL  string
-	nodeURL string
-	sem     chan struct{}
+	http   *http.Client
+	apiURL string
+	sem    chan struct{}
 
 	paceMu  sync.Mutex
 	lastReq time.Time
 }
 
-// NewClient builds a Client. apiURL serves blocks/validators, nodeURL serves the
-// chain overview. maxInflight caps concurrent requests (min 1).
-func NewClient(apiURL, nodeURL string, maxInflight int) *Client {
+// NewClient builds a Client. apiURL serves the indexer (blocks + validators).
+// maxInflight caps concurrent requests (min 1).
+func NewClient(apiURL string, maxInflight int) *Client {
 	if maxInflight < 1 {
 		maxInflight = 1
 	}
 	return &Client{
-		http:    &http.Client{Timeout: 15 * time.Second},
-		apiURL:  strings.TrimRight(apiURL, "/"),
-		nodeURL: strings.TrimRight(nodeURL, "/"),
-		sem:     make(chan struct{}, maxInflight),
+		http:   &http.Client{Timeout: 15 * time.Second},
+		apiURL: strings.TrimRight(apiURL, "/"),
+		sem:    make(chan struct{}, maxInflight),
 	}
 }
 
@@ -78,23 +76,17 @@ func (c *Client) pace(ctx context.Context) {
 	c.paceMu.Unlock()
 }
 
-// Overview returns the chain epoch/slot clock (node API).
-func (c *Client) Overview(ctx context.Context) (*Overview, error) {
-	var env overviewEnvelope
-	if err := c.getJSON(ctx, c.nodeURL+"/node/overview", &env); err != nil {
-		return nil, err
-	}
-	return &env.Data.Overview, nil
-}
-
-// BlockByNonce returns a single block with its producer and consensus group.
-func (c *Client) BlockByNonce(ctx context.Context, nonce uint64) (*IndexerBlock, error) {
-	url := fmt.Sprintf("%s/v1.0/block/by-nonce/%d", c.apiURL, nonce)
-	var env indexerBlockEnvelope
+// RecentBlocks returns a page of recent blocks (newest-first), each with its
+// producer and consensus group. One call batches up to `limit` blocks, so the
+// timeline window is fetched in a request or two — and blocks[0] is the chain
+// head (nonce + epoch), which removes any need for the node API.
+func (c *Client) RecentBlocks(ctx context.Context, page, limit int) ([]IndexerBlock, error) {
+	url := fmt.Sprintf("%s/v1.0/block/list?page=%d&limit=%d", c.apiURL, page, limit)
+	var env blocksEnvelope
 	if err := c.getJSON(ctx, url, &env); err != nil {
 		return nil, err
 	}
-	return &env.Data.Block, nil
+	return env.Data.Blocks, nil
 }
 
 // Validators returns the full validator list across pages. Returning every

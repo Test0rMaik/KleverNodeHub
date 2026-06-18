@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-06-18
+- **Far fewer Klever API calls (batched blocks, no node API)**: The block-production timeline now fetches blocks in one batched `GET /v1.0/block/list` call (up to ~50/page) instead of one request per block, and reads the chain head + epoch from the newest block — so the separate `GET /node/overview` (the stricter node-API host that was returning 429s) is gone entirely. Steady state is ~1 block request per poll plus the validator list every 5th poll. This should resolve the intermittent rate-limit errors.
+- **Fix: election count attributed to the wrong validator**: When several validators were elected in the same epoch, the per-month count could land on only one of them. The monitor only refreshed the validator set every ~5 polls, so on an epoch boundary it counted against a stale set. It now refreshes validator stats whenever the epoch changes, and **defers** counting an epoch until it has stats that actually reflect it (so a failed/rate-limited refresh on an epoch boundary is retried, not miscounted). Each elected validator now gets its own +1 per epoch.
+- **Elections chart: line chart with Total / Individual tabs**: The "Elections per Month" chart is now a line chart with two switchable views — **Total** (one line, all your validators summed) and **Individual** (one coloured line per validator, with a legend).
+
 ### 2026-06-17
 - **Fix: HTTP 429 (rate limiting) from the Klever API**: The validator monitor's client now paces requests (≥175ms apart), honors the server's `Retry-After` header, backs off longer (0.5→8s, up to 4 retries), and is gentler overall — lower concurrency (2), a smaller block-backfill burst (8/tick instead of 30), and an 8s default poll (was 6s). Poll cadence is overridable via the `klever_poll_secs` setting (floor 4s) if an endpoint is still strict. Note: running two dashboards from the same public IP (e.g. an old build alongside a new one) doubles the load on Klever's per-IP limit — run only one.
 - **Validators page: slimmer "Elected (mo)" column**: it was an over-wide auto-sized column with a big empty gap on its left; it now shrinks to its content width.

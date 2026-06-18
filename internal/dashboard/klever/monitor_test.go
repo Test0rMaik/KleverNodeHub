@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -27,37 +28,36 @@ func TestParseRetryAfter(t *testing.T) {
 	}
 }
 
-// mockChain serves canned indexer/node API responses for a tiny 5-block window.
-// Validator "aa" is managed; "bb" is some other producer.
+// mockChain serves canned indexer API responses for a tiny 5-block window.
+// Validator "aa" is managed; "bb" is some other producer. /v1.0/block/list
+// returns the blocks newest-first (head = nonce 5, epoch 42) in one page.
 func mockChain(t *testing.T) *httptest.Server {
 	t.Helper()
-	// nonce -> (producerBLS, validators array json)
-	blocks := map[uint64]struct {
-		producer string
-		signers  string
-	}{
-		1: {"bb", `[]`},          // empty signer set -> idle (can't attribute a miss)
-		2: {"aa", `["aa","bb"]`}, // aa produced
-		3: {"bb", `["bb"]`},      // aa elected but absent -> missed
-		4: {"bb", `["aa","bb"]`}, // aa signed -> idle
-		5: {"aa", `["aa","bb"]`}, // aa produced
+	// nonce -> (producerBLS, validators array json), newest (5) to oldest (1).
+	type blk struct {
+		nonce             uint64
+		producer, signers string
+	}
+	blocks := []blk{
+		{5, "aa", `["aa","bb"]`}, // aa produced
+		{4, "bb", `["aa","bb"]`}, // aa signed -> idle
+		{3, "bb", `["bb"]`},      // aa elected but absent -> missed
+		{2, "aa", `["aa","bb"]`}, // aa produced
+		{1, "bb", `[]`},          // empty signer set -> idle (can't attribute a miss)
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/node/overview", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"data":{"overview":{"epochNumber":42,"nonce":5,"currentSlot":500,"slotsPerEpoch":1000,"slotDuration":4000}}}`)
-	})
-	mux.HandleFunc("/v1.0/block/by-nonce/", func(w http.ResponseWriter, r *http.Request) {
-		var n uint64
-		parts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
-		_, _ = fmt.Sscanf(parts[len(parts)-1], "%d", &n)
-		b, ok := blocks[n]
-		if !ok {
-			http.NotFound(w, r)
+	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_, _ = fmt.Fprint(w, `{"data":{"blocks":[]}}`)
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"data":{"block":{"nonce":%d,"slot":%d,"epoch":42,"producerBLS":%q,"validators":%s}}}`,
-			n, n, b.producer, b.signers)
+		var parts []string
+		for _, b := range blocks {
+			parts = append(parts, fmt.Sprintf(`{"nonce":%d,"slot":%d,"epoch":42,"producerBLS":%q,"validators":%s}`,
+				b.nonce, b.nonce, b.producer, b.signers))
+		}
+		_, _ = fmt.Fprintf(w, `{"data":{"blocks":[%s]}}`, strings.Join(parts, ","))
 	})
 	mux.HandleFunc("/v1.0/validator/list", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") != "1" {
@@ -79,7 +79,7 @@ func TestMonitor_TimelineAndSummary(t *testing.T) {
 	srv := mockChain(t)
 	defer srv.Close()
 
-	client := NewClient(srv.URL, srv.URL, 4)
+	client := NewClient(srv.URL, 4)
 	// Managed node uses 0x + uppercase to exercise BLS normalization.
 	nodes := func() []ManagedNode {
 		return []ManagedNode{{BLS: "0xAA", Name: "my-node"}}
@@ -148,7 +148,7 @@ func TestMonitor_UnmatchedNodeIsOffChain(t *testing.T) {
 	srv := mockChain(t)
 	defer srv.Close()
 
-	client := NewClient(srv.URL, srv.URL, 4)
+	client := NewClient(srv.URL, 4)
 	nodes := func() []ManagedNode {
 		return []ManagedNode{{BLS: "ff", Name: "ghost"}} // not in validator list
 	}
@@ -177,7 +177,7 @@ func TestMonitor_UnmatchedNodeIsOffChain(t *testing.T) {
 func TestClient_ParsesValidatorList(t *testing.T) {
 	srv := mockChain(t)
 	defer srv.Close()
-	client := NewClient(srv.URL, srv.URL, 4)
+	client := NewClient(srv.URL, 4)
 
 	vals, err := client.Validators(context.Background())
 	if err != nil {
@@ -207,7 +207,7 @@ func TestMonitor_EmitsValidatorMetrics(t *testing.T) {
 	srv := mockChain(t)
 	defer srv.Close()
 
-	client := NewClient(srv.URL, srv.URL, 4)
+	client := NewClient(srv.URL, 4)
 	nodes := func() []ManagedNode {
 		return []ManagedNode{{ID: "node-1", ServerID: "srv-1", BLS: "0xAA", Name: "n1"}}
 	}
@@ -240,7 +240,7 @@ func TestMonitor_NoMetricsForOffChainNode(t *testing.T) {
 	srv := mockChain(t)
 	defer srv.Close()
 
-	client := NewClient(srv.URL, srv.URL, 4)
+	client := NewClient(srv.URL, 4)
 	nodes := func() []ManagedNode {
 		return []ManagedNode{{ID: "node-x", ServerID: "srv-1", BLS: "ff", Name: "ghost"}}
 	}
@@ -266,7 +266,7 @@ func TestMonitor_TracksMonthlyElections(t *testing.T) {
 	srv := mockChain(t)
 	defer srv.Close()
 
-	client := NewClient(srv.URL, srv.URL, 4)
+	client := NewClient(srv.URL, 4)
 	nodes := func() []ManagedNode {
 		return []ManagedNode{{ID: "n1", ServerID: "s1", BLS: "0xAA", Name: "n1"}}
 	}
@@ -300,7 +300,7 @@ func TestMonitor_TracksMonthlyElections(t *testing.T) {
 func TestMonitor_ElectionsSurviveRestart(t *testing.T) {
 	srv := mockChain(t)
 	defer srv.Close()
-	client := NewClient(srv.URL, srv.URL, 4)
+	client := NewClient(srv.URL, 4)
 	nodes := func() []ManagedNode {
 		return []ManagedNode{{ID: "n1", ServerID: "s1", BLS: "aa", Name: "n1"}}
 	}
@@ -346,7 +346,7 @@ func TestClient_ValidatorsPaginates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(socketResponder))
 	defer srv.Close()
 
-	client := NewClient(srv.URL, srv.URL, 4)
+	client := NewClient(srv.URL, 4)
 	vals, err := client.Validators(context.Background())
 	if err != nil {
 		t.Fatalf("Validators: %v", err)
@@ -362,6 +362,129 @@ func TestClient_ValidatorsPaginates(t *testing.T) {
 	}
 	if !found {
 		t.Error("page-2 validator was not fetched (pagination stopped early)")
+	}
+}
+
+// TestMonitor_CountsElectionsWithFreshStatsOnEpochChange guards the bug where a
+// new epoch was counted against a STALE validator set: a validator that only
+// became elected in the new epoch was missed (count 0) while another was double
+// counted. The fix forces a validator-stats refresh on epoch change.
+func TestMonitor_CountsElectionsWithFreshStatsOnEpochChange(t *testing.T) {
+	var mu sync.Mutex
+	epoch := uint64(100)
+	nonce := uint64(1000)
+	ddElected := false
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_, _ = fmt.Fprint(w, `{"data":{"blocks":[]}}`)
+			return
+		}
+		mu.Lock()
+		e, n := epoch, nonce
+		mu.Unlock()
+		_, _ = fmt.Fprintf(w, `{"data":{"blocks":[{"nonce":%d,"epoch":%d,"producerBLS":"aa","validators":["aa"]}]}}`, n, e)
+	})
+	mux.HandleFunc("/v1.0/validator/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_, _ = fmt.Fprint(w, `{"data":{"validators":[]}}`)
+			return
+		}
+		mu.Lock()
+		dd := ddElected
+		mu.Unlock()
+		ddList := "waiting"
+		if dd {
+			ddList = "elected"
+		}
+		_, _ = fmt.Fprintf(w, `{"data":{"validators":[{"blsPublicKey":"aa","list":"elected"},{"blsPublicKey":"dd","list":%q}]}}`, ddList)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, 4)
+	nodes := func() []ManagedNode {
+		return []ManagedNode{{ID: "a", BLS: "aa", Name: "A"}, {ID: "d", BLS: "dd", Name: "D"}}
+	}
+	m := NewMonitor(client, nodes, "mainnet", 1, 0)
+	m.SetElectionStore(newFakeKV())
+
+	// Epoch 100: only aa elected.
+	m.tick(context.Background())
+	// Epoch 101: dd is now elected too.
+	mu.Lock()
+	epoch, nonce, ddElected = 101, 1001, true
+	mu.Unlock()
+	m.tick(context.Background())
+
+	hist := m.ElectionHistory()
+	counts := hist.History[hist.CurrentMonth]
+	if counts["aa"] != 2 {
+		t.Errorf("aa elections = %d, want 2 (elected both epochs)", counts["aa"])
+	}
+	if counts["dd"] != 1 {
+		t.Errorf("dd elections = %d, want 1 (counted on the epoch it became elected)", counts["dd"])
+	}
+}
+
+// TestMonitor_DefersElectionCountWhenStatsStale guards against counting a new
+// epoch against stale validator data when the stats fetch fails on the
+// epoch-boundary tick (e.g. a 429). The epoch must be counted exactly once,
+// after the stats refresh succeeds — never skipped, never doubled.
+func TestMonitor_DefersElectionCountWhenStatsStale(t *testing.T) {
+	var mu sync.Mutex
+	failValidators := false
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_, _ = fmt.Fprint(w, `{"data":{"blocks":[]}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"blocks":[{"nonce":2000,"epoch":200,"producerBLS":"aa","validators":["aa"]}]}}`)
+	})
+	mux.HandleFunc("/v1.0/validator/list", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		fail := failValidators
+		mu.Unlock()
+		if fail {
+			// Any fetch failure exercises the defer path; a 404 avoids the
+			// client's 429/503 backoff so the test stays fast.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.URL.Query().Get("page") != "1" {
+			_, _ = fmt.Fprint(w, `{"data":{"validators":[]}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"validators":[{"blsPublicKey":"aa","list":"elected"}]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, 4)
+	nodes := func() []ManagedNode { return []ManagedNode{{ID: "a", BLS: "aa", Name: "A"}} }
+	m := NewMonitor(client, nodes, "mainnet", 1, 0)
+	m.SetElectionStore(newFakeKV())
+
+	// Epoch 200 first observed while the validator endpoint is failing.
+	mu.Lock()
+	failValidators = true
+	mu.Unlock()
+	m.tick(context.Background())
+	if got := m.ElectionHistory().History[m.ElectionHistory().CurrentMonth]["aa"]; got != 0 {
+		t.Fatalf("count with stale stats = %d, want 0 (deferred)", got)
+	}
+
+	// Stats recover — the same epoch is now counted, exactly once.
+	mu.Lock()
+	failValidators = false
+	mu.Unlock()
+	m.tick(context.Background())
+	m.tick(context.Background()) // a further tick must not double-count
+	if got := m.ElectionHistory().History[m.ElectionHistory().CurrentMonth]["aa"]; got != 1 {
+		t.Errorf("count after recovery = %d, want 1 (counted once)", got)
 	}
 }
 

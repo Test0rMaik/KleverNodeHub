@@ -3,32 +3,16 @@
 // managed by this NodeHub.
 package klever
 
-// The wire types below mirror the Klever indexer/node API JSON. Field names use
-// the API's camelCase keys; a few keys (producerBLS, kAppFees) are irregular and
-// tagged explicitly.
+// The wire types below mirror the Klever indexer API JSON. Field names use the
+// API's camelCase keys; the irregular `producerBLS` key is tagged explicitly.
 
-// overviewEnvelope wraps GET {nodeURL}/node/overview.
-type overviewEnvelope struct {
+// blocksEnvelope wraps GET {apiURL}/v1.0/block/list (newest-first). A single
+// call returns many blocks — producer + consensus group + epoch + nonce each —
+// so the whole timeline window is fetched in one (or a few) requests, and the
+// newest block doubles as the chain head + current epoch (no node API needed).
+type blocksEnvelope struct {
 	Data struct {
-		Overview Overview `json:"overview"`
-	} `json:"data"`
-}
-
-// Overview is the chain epoch/slot clock from the node API.
-type Overview struct {
-	EpochNumber       uint64 `json:"epochNumber"`
-	Nonce             uint64 `json:"nonce"`
-	CurrentSlot       uint64 `json:"currentSlot"`
-	NonceAtEpochStart uint64 `json:"nonceAtEpochStart"`
-	SlotAtEpochStart  uint64 `json:"slotAtEpochStart"`
-	SlotsPerEpoch     uint64 `json:"slotsPerEpoch"`
-	SlotDuration      uint64 `json:"slotDuration"`
-}
-
-// indexerBlockEnvelope wraps GET {apiURL}/v1.0/block/by-nonce/{nonce}.
-type indexerBlockEnvelope struct {
-	Data struct {
-		Block IndexerBlock `json:"block"`
+		Blocks []IndexerBlock `json:"blocks"`
 	} `json:"data"`
 }
 
