@@ -34,9 +34,11 @@ const minRequestInterval = 175 * time.Millisecond
 // interval, because Klever rate-limits per IP and the monitor shares that
 // budget across all its calls.
 type Client struct {
-	http   *http.Client
-	apiURL string
-	sem    chan struct{}
+	http *http.Client
+	sem  chan struct{}
+
+	urlMu  sync.RWMutex
+	apiURL string // guarded by urlMu so the indexer can be swapped live
 
 	paceMu  sync.Mutex
 	lastReq time.Time
@@ -53,6 +55,25 @@ func NewClient(apiURL string, maxInflight int) *Client {
 		apiURL: strings.TrimRight(apiURL, "/"),
 		sem:    make(chan struct{}, maxInflight),
 	}
+}
+
+// SetBaseURL swaps the indexer API base URL at runtime (e.g. when the operator
+// configures their own indexer in Settings). No-op for an empty URL.
+func (c *Client) SetBaseURL(apiURL string) {
+	apiURL = strings.TrimRight(strings.TrimSpace(apiURL), "/")
+	if apiURL == "" {
+		return
+	}
+	c.urlMu.Lock()
+	c.apiURL = apiURL
+	c.urlMu.Unlock()
+}
+
+// baseURL returns the current indexer API base URL.
+func (c *Client) baseURL() string {
+	c.urlMu.RLock()
+	defer c.urlMu.RUnlock()
+	return c.apiURL
 }
 
 // pace blocks until at least minRequestInterval has elapsed since the previous
@@ -81,7 +102,7 @@ func (c *Client) pace(ctx context.Context) {
 // timeline window is fetched in a request or two — and blocks[0] is the chain
 // head (nonce + epoch), which removes any need for the node API.
 func (c *Client) RecentBlocks(ctx context.Context, page, limit int) ([]IndexerBlock, error) {
-	url := fmt.Sprintf("%s/v1.0/block/list?page=%d&limit=%d", c.apiURL, page, limit)
+	url := fmt.Sprintf("%s/v1.0/block/list?page=%d&limit=%d", c.baseURL(), page, limit)
 	var env blocksEnvelope
 	if err := c.getJSON(ctx, url, &env); err != nil {
 		return nil, err
@@ -102,7 +123,7 @@ func (c *Client) Validators(ctx context.Context) ([]RawValidator, error) {
 	const maxPages = 25
 	var all []RawValidator
 	for page := 1; page <= maxPages; page++ {
-		url := fmt.Sprintf("%s/v1.0/validator/list?page=%d&limit=%d", c.apiURL, page, limit)
+		url := fmt.Sprintf("%s/v1.0/validator/list?page=%d&limit=%d", c.baseURL(), page, limit)
 		var env validatorListEnvelope
 		if err := c.getJSON(ctx, url, &env); err != nil {
 			return nil, err

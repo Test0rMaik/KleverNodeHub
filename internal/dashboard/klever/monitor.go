@@ -72,6 +72,7 @@ type Monitor struct {
 	maxPerTick int
 	statsEvery int
 	metrics    MetricsWriter
+	apiURLFn   func() string // optional: resolves the indexer URL each tick (live override)
 
 	// Election history persistence. electKV/elect are written only by the single
 	// tick goroutine; reads in buildLocked/ElectionHistory happen under m.mu.
@@ -121,6 +122,13 @@ func (m *Monitor) SetMetricsWriter(w MetricsWriter) {
 // when nil, the monitor doesn't track elections.
 func (m *Monitor) SetElectionStore(kv KVStore) {
 	m.electKV = kv
+}
+
+// SetAPIURLProvider sets an optional resolver for the indexer API base URL,
+// consulted at the start of every poll so an operator's custom indexer (set in
+// Settings) takes effect live, without a restart.
+func (m *Monitor) SetAPIURLProvider(fn func() string) {
+	m.apiURLFn = fn
 }
 
 // ElectionHistory returns a copy of the persisted monthly election history.
@@ -255,6 +263,11 @@ func (m *Monitor) Snapshot() *Snapshot {
 const blockChunk = 100
 
 func (m *Monitor) tick(ctx context.Context) {
+	// Apply a live indexer-URL override (operator's own indexer) before fetching.
+	if m.apiURLFn != nil {
+		m.client.SetBaseURL(m.apiURLFn())
+	}
+
 	// One batched call gets the newest chunk of blocks; blocks[0] is the head
 	// (nonce + epoch), so there's no separate node-API overview request.
 	newest, err := m.client.RecentBlocks(ctx, 1, blockChunk)
