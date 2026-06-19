@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-06-19
+- **Fix: agents intermittently dropping ("heartbeat stalled")**: Agents on several servers went offline together at irregular intervals, then reconnected. Root cause was dashboard-side: the WebSocket read loop persisted heartbeat/metrics to SQLite synchronously through one global lock, so whenever that lock was held a while (notably the hourly metrics decimation, which ran in a single long transaction) every agent's read loop blocked, stopped sending WebSocket pongs, and all agents timed out at once. Fixed by (1) persisting heartbeat/node-metrics on a background worker so the read loop stays responsive, and (2) chunking the hourly decimation into short, bucket-aligned transactions that release the lock between slices. Submitted upstream as well (PR #63).
+- **Synced to upstream v0.3.82** (incl. optional BLS key generation during provisioning), with all fork-only features preserved (validator monitoring, alerts, elections chart, custom agent-update source, Klever API override).
+
 ### 2026-06-18 (later)
 - **Fix: "Update all agents" now uses your custom source on a fork**: The update banner/flow posted to the GitHub release endpoint with the dashboard's version tag, which doesn't exist as a release on a fork → HTTP 404 "release not found". Now, whenever an **Agent update URL** is set (Settings → Agents), the update-all flow downloads agent binaries from that source instead of GitHub. So the banner's "Update all agents" works end-to-end on a fork. (Hardening: the version label is validated before it's used in the on-disk binary path.)
 - **Override the Klever API (use your own indexer)**: Settings → **Klever** now has a **Klever API URL** field. Leave it blank to use the official Klever indexer for the selected network, or set it to your own indexer's base URL (e.g. if you run your own indexer with different rate limits). The Validators page (blocks + validators) uses it. Applies **live** — no restart — and reverts to the official API when cleared.
