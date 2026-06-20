@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-06-20 (hotfix)
+- **Fix: dashboard hung on startup after knh.2**: `SetMaxOpenConns(1)` (added to stop SQLITE_BUSY) serialized *all* DB access on one connection, so the startup decimation working through a large backlog held that connection and starved the main goroutine — the server never reached "listening". Reverted to the connection pool and instead raised SQLite's `busy_timeout` to 30s, which absorbs the brief write contention (decimation runs in short slices; heartbeats persist off the WS loop) without erroring and without serializing reads. Verified the dashboard reaches listening on a fresh start.
+
 ### 2026-06-20
 - **Fix: residual agent drops + SQLite "database is locked"**: After the first heartbeat fix, the hourly decimation still logged `database is locked (5) (SQLITE_BUSY)` and a co-located agent still dropped occasionally. SQLite allows only one writer, but the default `database/sql` pool let writes from different code paths run on separate connections and collide. Set `SetMaxOpenConns(1)` so all DB access serializes on one connection (no more SQLITE_BUSY), and batched the daily/6-hourly metric purges (2000 rows at a time, yielding between batches) so a large purge can't hold that connection long enough to stall heartbeats. Also in PR #63.
 

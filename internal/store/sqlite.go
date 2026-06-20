@@ -29,16 +29,6 @@ func Open(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Serialize all access on a single connection. SQLite allows only one writer
-	// at a time; with the default (unlimited) pool, writes issued from different
-	// code paths land on different connections and collide as SQLITE_BUSY
-	// ("database is locked") — which is exactly what stalled the hourly
-	// decimation and, in turn, the agent WebSocket loop. One connection makes the
-	// driver queue access instead of erroring; every statement here is short.
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
-	sqlDB.SetConnMaxLifetime(0)
-
 	// Enable WAL mode for better concurrent read performance
 	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		_ = sqlDB.Close()
@@ -51,8 +41,14 @@ func Open(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
-	// Set busy timeout for concurrent access (5 seconds)
-	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000"); err != nil {
+	// Busy timeout: SQLite allows one writer at a time, and writes from different
+	// stores run on different pooled connections. Rather than serialize on a
+	// single connection (which also serializes reads and stalled startup while a
+	// large decimation backlog held the connection), keep the pool and wait out
+	// brief write contention. The decimation runs in short bucket-aligned slices
+	// and heartbeats persist off the WS loop, so contention windows are short and
+	// a generous timeout absorbs them instead of erroring with SQLITE_BUSY.
+	if _, err := sqlDB.Exec("PRAGMA busy_timeout=30000"); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("set busy timeout: %w", err)
 	}
