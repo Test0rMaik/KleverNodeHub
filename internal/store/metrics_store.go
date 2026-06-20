@@ -256,34 +256,45 @@ func (s *MetricsStore) decimateSlice(cutoff, bucketSecs, sliceSpan int64) (done 
 // Purge deletes archived metrics older than the given duration.
 // Returns the number of rows deleted.
 func (s *MetricsStore) Purge(olderThan time.Duration) (int64, error) {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-
 	cutoff := time.Now().Add(-olderThan).Unix()
-
-	result, err := s.db.db.Exec(`DELETE FROM metrics_archive WHERE bucket_end < ?`, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("purge archive: %w", err)
-	}
-
-	count, _ := result.RowsAffected()
-	return count, nil
+	return s.purgeOldRows("metrics_archive", "bucket_end", cutoff)
 }
 
 // PurgeSystemMetrics deletes system metrics older than the given duration.
 func (s *MetricsStore) PurgeSystemMetrics(olderThan time.Duration) (int64, error) {
-	s.db.mu.Lock()
-	defer s.db.mu.Unlock()
-
 	cutoff := time.Now().Add(-olderThan).Unix()
+	return s.purgeOldRows("system_metrics", "collected_at", cutoff)
+}
 
-	result, err := s.db.db.Exec(`DELETE FROM system_metrics WHERE collected_at < ?`, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("purge system metrics: %w", err)
+// purgeBatch is how many rows one purge DELETE removes before releasing the
+// lock/connection, so a large purge can't hold the single DB connection (and
+// thereby stall agent heartbeats) for the whole delete.
+const purgeBatch = 2000
+
+// purgeOldRows deletes rows where col < cutoff in bounded batches, yielding the
+// lock between batches. table/col are package-internal constants (never user
+// input), so interpolating them into the statement is safe.
+func (s *MetricsStore) purgeOldRows(table, col string, cutoff int64) (int64, error) {
+	q := fmt.Sprintf(
+		`DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE %s < ? LIMIT %d)`,
+		table, table, col, purgeBatch,
+	)
+	var total int64
+	for {
+		s.mu.Lock()
+		result, err := s.db.db.Exec(q, cutoff)
+		s.mu.Unlock()
+		if err != nil {
+			return total, fmt.Errorf("purge %s: %w", table, err)
+		}
+		n, _ := result.RowsAffected()
+		total += n
+		if n < purgeBatch {
+			break
+		}
+		time.Sleep(10 * time.Millisecond) // yield between batches
 	}
-
-	count, _ := result.RowsAffected()
-	return count, nil
+	return total, nil
 }
 
 // QueryAutoResolution automatically selects metrics_recent or metrics_archive
