@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-06-20
+- **Fix: residual agent drops + SQLite "database is locked"**: After the first heartbeat fix, the hourly decimation still logged `database is locked (5) (SQLITE_BUSY)` and a co-located agent still dropped occasionally. SQLite allows only one writer, but the default `database/sql` pool let writes from different code paths run on separate connections and collide. Set `SetMaxOpenConns(1)` so all DB access serializes on one connection (no more SQLITE_BUSY), and batched the daily/6-hourly metric purges (2000 rows at a time, yielding between batches) so a large purge can't hold that connection long enough to stall heartbeats. Also in PR #63.
+
 ### 2026-06-19
 - **Fix: agents intermittently dropping ("heartbeat stalled")**: Agents on several servers went offline together at irregular intervals, then reconnected. Root cause was dashboard-side: the WebSocket read loop persisted heartbeat/metrics to SQLite synchronously through one global lock, so whenever that lock was held a while (notably the hourly metrics decimation, which ran in a single long transaction) every agent's read loop blocked, stopped sending WebSocket pongs, and all agents timed out at once. Fixed by (1) persisting heartbeat/node-metrics on a background worker so the read loop stays responsive, and (2) chunking the hourly decimation into short, bucket-aligned transactions that release the lock between slices. Submitted upstream as well (PR #63).
 - **Synced to upstream v0.3.82** (incl. optional BLS key generation during provisioning), with all fork-only features preserved (validator monitoring, alerts, elections chart, custom agent-update source, Klever API override).
