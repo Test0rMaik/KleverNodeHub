@@ -157,6 +157,37 @@ func TestDecimate(t *testing.T) {
 	}
 }
 
+// TestPurgeSystemMetrics_Batched inserts more rows than one purge batch and
+// verifies the batched delete removes them all (loop terminates, no leftovers).
+func TestPurgeSystemMetrics_Batched(t *testing.T) {
+	s := setupMetricsStore(t)
+
+	oldTs := time.Now().Add(-100 * 24 * time.Hour).Unix()
+	const rows = purgeBatch + 500 // force more than one batch
+	for i := 0; i < rows; i++ {
+		m := &SystemMetricsRow{CPUPercent: 1, CollectedAt: oldTs + int64(i)}
+		if err := s.InsertSystemMetrics("server-1", m); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	n, err := s.PurgeSystemMetrics(90 * 24 * time.Hour)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if n != rows {
+		t.Errorf("purged = %d, want %d", n, rows)
+	}
+
+	left, err := s.QuerySystemMetrics("server-1", oldTs-1, oldTs+int64(rows)+1)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("rows left after batched purge = %d, want 0", len(left))
+	}
+}
+
 // TestDecimate_MultipleSlices covers data spanning more than one decimation
 // slice (sliceBuckets * bucketSize), exercising the chunked path: every old row
 // must be aggregated and removed from metrics_recent across slices.

@@ -29,6 +29,16 @@ func Open(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
+	// Serialize all access on a single connection. SQLite allows only one writer
+	// at a time; with the default (unlimited) pool, writes issued from different
+	// code paths land on different connections and collide as SQLITE_BUSY
+	// ("database is locked") — which is exactly what stalled the hourly
+	// decimation and, in turn, the agent WebSocket loop. One connection makes the
+	// driver queue access instead of erroring; every statement here is short.
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetConnMaxLifetime(0)
+
 	// Enable WAL mode for better concurrent read performance
 	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		_ = sqlDB.Close()
