@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-06-20 (agent update)
+- **Fix: "Agent Update" sidebar link now opens the dialog**: clicking it did nothing — the link just set `#agent-update` in the URL with nothing wired to it. The overview now opens the Agent Update dialog on that hash (from any page), and clears the hash on close so it re-triggers.
+- **Fix: fork agent versions detected as outdated**: the agent version check only compared `X.Y.Z` and ignored the `-knh.<n>` suffix, so an agent on `v0.3.82-knh.2` looked identical to a `v0.3.82-knh.3` dashboard and was never flagged for update. Version comparison (banner + update dialog) now orders by the `knh` number on equal `X.Y.Z`, so older fork agents are correctly shown as outdated and can be updated from your custom source.
+
 ### 2026-06-20 (hotfix)
 - **Fix: dashboard hung on startup after knh.2**: `SetMaxOpenConns(1)` (added to stop SQLITE_BUSY) serialized *all* DB access on one connection, so the startup decimation working through a large backlog held that connection and starved the main goroutine — the server never reached "listening". Reverted to the connection pool and instead raised SQLite's `busy_timeout` to 30s, which absorbs the brief write contention (decimation runs in short slices; heartbeats persist off the WS loop) without erroring and without serializing reads. Verified the dashboard reaches listening on a fresh start.
 

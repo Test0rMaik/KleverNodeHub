@@ -2138,7 +2138,28 @@
 
         function hideAgentUpdate() {
             document.getElementById('modal-agent-update').classList.remove('active');
+            // Clear the #agent-update hash so the sidebar link re-triggers next time.
+            if (window.location.hash === '#agent-update') {
+                history.replaceState(null, '', window.location.pathname + window.location.search);
+            }
         }
+
+        // Open the Agent Update modal when navigated to with #agent-update — this
+        // is how the shared sidebar's "Agent Update" link (href="/overview#agent-update")
+        // opens it, from this page or any other.
+        (function () {
+            function maybeOpenAgentUpdate() {
+                if (window.location.hash === '#agent-update') {
+                    showAgentUpdate();
+                }
+            }
+            window.addEventListener('hashchange', maybeOpenAgentUpdate);
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', maybeOpenAgentUpdate);
+            } else {
+                maybeOpenAgentUpdate();
+            }
+        })();
 
         async function loadDownloadedVersions() {
             try {
@@ -2430,15 +2451,24 @@
             }
         }
 
+        function parseSemverKnh(v) {
+            v = String(v).replace(/^v/, '');
+            var m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
+            if (!m) return null;
+            // Fork builds: v<base>-knh.<n>; higher knh on the same X.Y.Z is newer.
+            var knh = 0;
+            var km = v.match(/-knh\.(\d+)/);
+            if (km) knh = parseInt(km[1], 10);
+            return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10), knh];
+        }
+
         function isOlderVersion(local, remote) {
             if (local === 'dev' || local === 'unknown' || local === '') return true;
-            var l = local.replace(/^v/, '').split('.');
-            var r = remote.replace(/^v/, '').split('.');
-            for (var i = 0; i < 3; i++) {
-                var ln = parseInt(l[i] || '0', 10);
-                var rn = parseInt(r[i] || '0', 10);
-                if (ln < rn) return true;
-                if (ln > rn) return false;
+            var pl = parseSemverKnh(local), pr = parseSemverKnh(remote);
+            if (!pl || !pr) return false;
+            for (var i = 0; i < 4; i++) {
+                if (pl[i] < pr[i]) return true;
+                if (pl[i] > pr[i]) return false;
             }
             return false;
         }

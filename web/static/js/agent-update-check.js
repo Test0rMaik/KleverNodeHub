@@ -24,14 +24,19 @@
         v = String(v).replace(/^v/, '');
         var m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
         if (!m) return null;
-        return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+        // Fork builds are tagged v<base>-knh.<n>; a higher knh on the same X.Y.Z
+        // is newer. Without a -knh suffix, treat it as knh 0 (plain base build).
+        var knh = 0;
+        var km = v.match(/-knh\.(\d+)/);
+        if (km) knh = parseInt(km[1], 10);
+        return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10), knh];
     }
 
     function compareVersions(a, b) {
         var pa = parseVersion(a);
         var pb = parseVersion(b);
         if (!pa || !pb) return 0;
-        for (var i = 0; i < 3; i++) {
+        for (var i = 0; i < 4; i++) {
             if (pa[i] !== pb[i]) return pa[i] - pb[i];
         }
         return 0;
