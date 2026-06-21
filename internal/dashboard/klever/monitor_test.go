@@ -524,6 +524,66 @@ func TestClient_SetBaseURL(t *testing.T) {
 	}
 }
 
+// TestMonitor_SkippedBlocksInTimeline verifies that nonces absent from the
+// block index (never produced — e.g. the elected leader was jailed) appear as
+// "skipped" in the timeline rather than being silently omitted. This makes
+// jailed-peer-induced nonce gaps visible so operators can distinguish them from
+// genuine signing misses by their own validator.
+func TestMonitor_SkippedBlocksInTimeline(t *testing.T) {
+	// Block window [1..5]; nonce 3 is intentionally absent (leader was jailed).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_, _ = fmt.Fprint(w, `{"data":{"blocks":[]}}`)
+			return
+		}
+		// Nonce 3 is missing from the indexer — no block was produced.
+		_, _ = fmt.Fprint(w, `{"data":{"blocks":[
+			{"nonce":5,"epoch":10,"producerBLS":"bb","validators":["aa","bb"]},
+			{"nonce":4,"epoch":10,"producerBLS":"aa","validators":["aa","bb"]},
+			{"nonce":2,"epoch":10,"producerBLS":"bb","validators":["aa","bb"]},
+			{"nonce":1,"epoch":10,"producerBLS":"bb","validators":["aa","bb"]}
+		]}}`)
+	})
+	mux.HandleFunc("/v1.0/validator/list", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"data":{"validators":[
+			{"blsPublicKey":"aa","list":"elected","leaderSuccessRate":{},"validatorSuccessRate":{}}
+		]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, 4)
+	nodes := func() []ManagedNode { return []ManagedNode{{BLS: "aa", Name: "A"}} }
+	m := NewMonitor(client, nodes, "mainnet", 5, 0)
+	m.tick(context.Background())
+
+	snap := m.Snapshot()
+	if len(snap.Validators) != 1 {
+		t.Fatalf("expected 1 validator, got %d", len(snap.Validators))
+	}
+	tl := snap.Validators[0].Timeline
+	// Expect 5 cells for nonces 1..5 with nonce 3 = "skipped".
+	if len(tl) != 5 {
+		t.Fatalf("timeline len = %d, want 5", len(tl))
+	}
+	want := []struct {
+		nonce  uint64
+		status string
+	}{
+		{1, "idle"},
+		{2, "idle"},
+		{3, "skipped"},
+		{4, "produced"},
+		{5, "idle"},
+	}
+	for i, w := range want {
+		if tl[i].Nonce != w.nonce || tl[i].Status != w.status {
+			t.Errorf("cell %d: got {%d %q}, want {%d %q}", i, tl[i].Nonce, tl[i].Status, w.nonce, w.status)
+		}
+	}
+}
+
 func TestNormalizeBLS(t *testing.T) {
 	cases := map[string]string{
 		"0xAB":  "ab",

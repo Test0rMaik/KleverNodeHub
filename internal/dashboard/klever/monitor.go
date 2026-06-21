@@ -386,7 +386,7 @@ func (m *Monitor) tick(ctx context.Context) {
 	if m.elect != nil && m.elect.LastEpoch > prevLastEpoch {
 		m.nextTickStatRefresh = true
 	}
-	m.latest = m.buildLocked(head, managed)
+	m.latest = m.buildLocked(head, desiredStart, managed)
 	stats := m.validators
 	var electPayload []byte
 	if electionsDirty {
@@ -477,13 +477,22 @@ func (m *Monitor) recordError(err error) {
 }
 
 // buildLocked renders the snapshot from current state. Caller holds m.mu.
-func (m *Monitor) buildLocked(head uint64, managed []ManagedNode) *Snapshot {
-	// Ordered window nonces (oldest -> newest) so the timeline reads left-to-right.
-	nonces := make([]uint64, 0, len(m.have))
-	for n := range m.have {
-		nonces = append(nonces, n)
+// windowStart is desiredStart from tick() — the first nonce of the rolling
+// window as already used for mergeBlocks/pruneLocked, passed in to avoid
+// recomputing the same formula here.
+func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *Snapshot {
+	// Floor at 1: nonce 0 is never a valid Klever block (tick() rejects head==0),
+	// so including it in the timeline would produce a spurious "skipped" cell
+	// whenever head < m.window (young chain / testnet).
+	if windowStart == 0 {
+		windowStart = 1
 	}
-	sort.Slice(nonces, func(i, j int) bool { return nonces[i] < nonces[j] })
+
+	// Only label absent nonces "skipped" when the window is small enough for
+	// backfill to cover it in a single tick. If window > blockChunk*(1+maxPerTick),
+	// the oldest pages are never fetched and absent nonces would be falsely
+	// "skipped" forever. In that case fall back to "idle" (same as pre-PR).
+	canMarkSkipped := (m.window+blockChunk-1)/blockChunk <= 1+m.maxPerTick
 
 	snap := &Snapshot{
 		Epoch:     m.epoch,
@@ -533,13 +542,18 @@ func (m *Monitor) buildLocked(head uint64, managed []ManagedNode) *Snapshot {
 			LeaderMisses:   v.LeaderSuccessRate.NumFailure,
 			Signed:         v.ValidatorSuccessRate.NumSuccess,
 			Missed:         v.ValidatorSuccessRate.NumFailure,
-			Timeline:       make([]TimelineCell, 0, len(nonces)),
+			Timeline:       make([]TimelineCell, 0, m.window),
 		}
 
-		for _, n := range nonces {
-			rec := m.have[n]
+		// Iterate the full nonce range so genuinely absent nonces (blocks that
+		// were never produced, e.g. the leader was jailed) appear as "skipped"
+		// rather than being silently omitted from the timeline.
+		for n := windowStart; n <= head; n++ {
+			rec, exists := m.have[n]
 			status := "idle"
 			switch {
+			case !exists && canMarkSkipped:
+				status = "skipped"
 			case rec.producerBLS == bls:
 				status = "produced"
 			case elected && rec.hasSigners:

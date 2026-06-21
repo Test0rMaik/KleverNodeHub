@@ -4,8 +4,9 @@ import "time"
 
 // TimelineCell is one block in a validator's rolling production timeline.
 // Status is "produced" (this validator led the block), "missed" (the validator
-// was elected but absent from the block's consensus signer set), or "idle"
-// (someone else led and this validator either signed or wasn't due).
+// was elected but absent from the block's consensus signer set), "skipped"
+// (no block was produced for this nonce — likely a jailed or offline leader),
+// or "idle" (someone else led and this validator either signed or wasn't due).
 type TimelineCell struct {
 	Nonce  uint64 `json:"nonce"`
 	Status string `json:"status"`

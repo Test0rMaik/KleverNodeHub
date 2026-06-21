@@ -156,6 +156,7 @@
                         <div class="text-sm" style="display:flex;gap:14px;align-items:center;color:var(--text-muted);">
                             <span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--success);display:inline-block;"></span>Produced</span>
                             <span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--error);display:inline-block;"></span>Missed</span>
+                            <span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--warning);display:inline-block;"></span>Skipped</span>
                             <span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:2px;background:rgba(123,146,191,0.25);display:inline-block;"></span>Idle</span>
                         </div>
                     </div>
@@ -433,12 +434,10 @@
             var cells = (v.timeline || []).map(function(c) {
                 var color = c.status === 'produced' ? 'var(--success)'
                     : c.status === 'missed' ? 'var(--error)'
+                    : c.status === 'skipped' ? 'var(--warning)'
                     : 'rgba(123,146,191,0.22)';
                 return '<span title="block ' + esc(c.nonce) + ' · ' + esc(c.status) + '" style="flex:1 1 0;min-width:2px;height:26px;border-radius:2px;background:' + color + ';"></span>';
             }).join('');
-            if (!cells) {
-                cells = '<span class="text-sm text-muted">no blocks yet</span>';
-            }
             return '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--border);">' +
                 '<div style="width:170px;flex-shrink:0;color:var(--text-primary);font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(v.name) + '</div>' +
                 '<div style="flex:1;display:flex;gap:1px;align-items:center;min-width:0;">' + cells + '</div>' +
