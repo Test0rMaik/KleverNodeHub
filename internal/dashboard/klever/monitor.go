@@ -563,11 +563,16 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 		}
 
 		// Iterate the full nonce range. Absent nonces appear as "skipped" (jailed
-		// leader — block was never produced). "missed" means a block existed and
-		// the validator was in the elected signer set but absent from the actual
-		// signer list. vv.Missed counts only "missed" cells: skipped rounds never
-		// inflate it, so phantom epoch-counter inflation from jailed peers is
-		// automatically excluded.
+		// leader — block was never produced). "missed" means a block existed in
+		// the CURRENT epoch and the validator was in the elected signer set but
+		// absent from the actual signer list.
+		//
+		// The epoch guard is critical: the rolling window straddles epoch
+		// boundaries. A freshly-elected validator was not in the signer set of
+		// previous-epoch blocks, so without the guard those blocks would be
+		// falsely marked "missed". Skipped rounds (empty nonces from a jailed
+		// leader) never reach the "missed" branch, so phantom epoch-counter
+		// inflation from jailed peers is also excluded.
 		for n := windowStart; n <= head; n++ {
 			rec, exists := m.have[n]
 			status := "idle"
@@ -576,7 +581,7 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 				status = "skipped"
 			case rec.producerBLS == bls:
 				status = "produced"
-			case elected && rec.hasSigners:
+			case elected && rec.hasSigners && rec.epoch == m.epoch:
 				if _, signed := rec.signers[bls]; !signed {
 					status = "missed"
 				}
@@ -593,7 +598,13 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 		snap.Summary.TotalStaking += vv.SelfStake
 		snap.Summary.TotalAllowance += vv.Allowance
 		snap.Summary.Produced += vv.Produced
-		snap.Summary.Missed += vv.Missed
+		if state == "elected" {
+			// ChainMissed is the chain's per-epoch NumFailure counter — it covers
+			// the full epoch (not just the window) and resets each epoch.  Guard
+			// with "elected" so jailed/waiting validators don't contribute their
+			// accumulated historical NumFailure to the summary card.
+			snap.Summary.Missed += vv.ChainMissed
+		}
 		switch state {
 		case "elected":
 			snap.Summary.Elected++

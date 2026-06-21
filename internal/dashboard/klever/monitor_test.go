@@ -641,7 +641,7 @@ func TestMonitor_TimelineBasedMissedCount(t *testing.T) {
 		}
 	}
 
-	// Missed must reflect only the genuine signing miss (nonce 3), not the chain
+	// v.Missed reflects only the genuine signing miss (nonce 3), not the chain
 	// counter (10) which includes phantom jailed-peer misses.
 	if v.Missed != 1 {
 		t.Errorf("Missed = %d, want 1 (timeline-based, skipped nonces excluded)", v.Missed)
@@ -649,8 +649,76 @@ func TestMonitor_TimelineBasedMissedCount(t *testing.T) {
 	if v.ChainMissed != 10 {
 		t.Errorf("ChainMissed = %d, want 10 (raw chain counter)", v.ChainMissed)
 	}
-	if snap.Summary.Missed != 1 {
-		t.Errorf("Summary.Missed = %d, want 1", snap.Summary.Missed)
+	// Summary.Missed uses ChainMissed (epoch total from chain) so it covers the
+	// full epoch even for misses outside the 100-block window.
+	if snap.Summary.Missed != 10 {
+		t.Errorf("Summary.Missed = %d, want 10 (chain epoch total)", snap.Summary.Missed)
+	}
+}
+
+// TestMonitor_EpochBoundaryNoCrossEpochMisses verifies that blocks from a
+// previous epoch are never marked "missed", even if the validator is currently
+// elected. This prevents false-positive miss counts for freshly-elected
+// validators whose 100-block window straddles the epoch boundary.
+func TestMonitor_EpochBoundaryNoCrossEpochMisses(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_, _ = fmt.Fprint(w, `{"data":{"blocks":[]}}`)
+			return
+		}
+		// nonce 1-2: epoch 41 (previous epoch). "aa" absent from signers —
+		// must NOT count as "missed" because aa was not elected in epoch 41.
+		// nonce 3: epoch 42 (current epoch). "aa" absent from signers → genuine "missed".
+		_, _ = fmt.Fprint(w, `{"data":{"blocks":[
+			{"nonce":3,"epoch":42,"producerBLS":"bb","validators":["bb"]},
+			{"nonce":2,"epoch":41,"producerBLS":"bb","validators":["bb"]},
+			{"nonce":1,"epoch":41,"producerBLS":"bb","validators":["bb"]}
+		]}}`)
+	})
+	mux.HandleFunc("/v1.0/validator/list", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"data":{"validators":[
+			{"blsPublicKey":"aa","list":"elected",
+			 "validatorSuccessRate":{"numSuccess":1,"numFailure":5}}
+		]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, 4)
+	nodes := func() []ManagedNode { return []ManagedNode{{BLS: "aa", Name: "A"}} }
+	m := NewMonitor(client, nodes, "mainnet", 3, 0)
+	m.tick(context.Background())
+
+	snap := m.Snapshot()
+	if len(snap.Validators) != 1 {
+		t.Fatalf("expected 1 validator, got %d", len(snap.Validators))
+	}
+	v := snap.Validators[0]
+
+	// nonce 1 (epoch 41): aa not in signers → "idle" (epoch guard, NOT "missed")
+	// nonce 2 (epoch 41): aa not in signers → "idle" (epoch guard, NOT "missed")
+	// nonce 3 (epoch 42): aa not in signers → "missed" (same epoch, genuine miss)
+	wantTimeline := []struct {
+		nonce  uint64
+		status string
+	}{{1, "idle"}, {2, "idle"}, {3, "missed"}}
+	if len(v.Timeline) != 3 {
+		t.Fatalf("timeline len = %d, want 3", len(v.Timeline))
+	}
+	for i, w := range wantTimeline {
+		if v.Timeline[i].Nonce != w.nonce || v.Timeline[i].Status != w.status {
+			t.Errorf("cell %d: got {%d %q}, want {%d %q}", i, v.Timeline[i].Nonce, v.Timeline[i].Status, w.nonce, w.status)
+		}
+	}
+
+	if v.Missed != 1 {
+		t.Errorf("Missed = %d, want 1 (only nonce 3 is a current-epoch miss)", v.Missed)
+	}
+	// Summary.Missed must use ChainMissed (numFailure=5), not vv.Missed (timeline=1),
+	// so an epoch miss count from before the window is not lost.
+	if snap.Summary.Missed != 5 {
+		t.Errorf("Summary.Missed = %d, want 5 (chain epoch total, not window-based timeline count)", snap.Summary.Missed)
 	}
 }
 

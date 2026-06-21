@@ -39,7 +39,7 @@ type Summary struct {
 	TotalStaking   float64 `json:"total_staking"`   // KLV
 	TotalAllowance float64 `json:"total_allowance"` // KLV
 	Produced       int64   `json:"produced"`
-	Missed         int64   `json:"missed"`
+	Missed         int64   `json:"missed"` // chain epoch total (ChainMissed) for elected validators only; resets each epoch
 }
 
 // Snapshot is the full payload served to the validators page.
