@@ -35,18 +35,18 @@ var systemMetrics = map[string]bool{
 
 // Evaluator evaluates alert rules against current metrics.
 type Evaluator struct {
-	mu                 sync.Mutex
-	alertStore         *store.AlertStore
-	metricsStore       *store.MetricsStore
-	nodeStore          *store.NodeStore
-	serverStore        *store.ServerStore
-	settingsStore      *store.SettingsStore
-	notifier           *notify.Manager
-	states             map[string]*AlertState
-	cancel             context.CancelFunc
-	interval           time.Duration
-	idCounter          int64
-	isAgentConnected   func(serverID string) bool // nil = not available
+	mu               sync.Mutex
+	alertStore       *store.AlertStore
+	metricsStore     *store.MetricsStore
+	nodeStore        *store.NodeStore
+	serverStore      *store.ServerStore
+	settingsStore    *store.SettingsStore
+	notifier         *notify.Manager
+	states           map[string]*AlertState
+	cancel           context.CancelFunc
+	interval         time.Duration
+	idCounter        int64
+	isAgentConnected func(serverID string) bool // nil = not available
 }
 
 // NewEvaluator creates a new alert evaluator.
