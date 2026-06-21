@@ -430,6 +430,14 @@ func (m *Monitor) emitMetrics(managed []ManagedNode, stats map[string]RawValidat
 	if m.metrics == nil {
 		return
 	}
+	// Mirror the jailed-peer adjustment from buildLocked so alert thresholds on
+	// MetricMissedBlocks are not tripped by phantom misses from skipped rounds.
+	var jailedLeaderMisses int64
+	for _, val := range stats {
+		if val.List == "jailed" {
+			jailedLeaderMisses += val.LeaderSuccessRate.NumFailure
+		}
+	}
 	ts := nowUnix()
 	for _, node := range managed {
 		if node.ID == "" {
@@ -443,8 +451,15 @@ func (m *Monitor) emitMetrics(managed []ManagedNode, stats map[string]RawValidat
 		if v.List == "jailed" {
 			jailed = 1.0
 		}
+		missed := v.ValidatorSuccessRate.NumFailure
+		if v.List == "elected" {
+			missed -= jailedLeaderMisses
+			if missed < 0 {
+				missed = 0
+			}
+		}
 		metrics := map[string]float64{
-			MetricMissedBlocks: float64(v.ValidatorSuccessRate.NumFailure),
+			MetricMissedBlocks: float64(missed),
 			MetricLeaderMisses: float64(v.LeaderSuccessRate.NumFailure),
 			MetricJailed:       jailed,
 		}
@@ -494,6 +509,18 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 	// "skipped" forever. In that case fall back to "idle" (same as pre-PR).
 	canMarkSkipped := (m.window+blockChunk-1)/blockChunk <= 1+m.maxPerTick
 
+	// On Klever, when an elected leader fails to produce their block (e.g. jailed),
+	// the round is empty and the chain increments ValidatorSuccessRate.NumFailure for
+	// ALL other elected validators (they couldn't sign a block that never existed).
+	// Subtracting the sum of jailed validators' LeaderSuccessRate.NumFailure yields
+	// the genuine missed-signing count for our managed validators.
+	var jailedLeaderMisses int64
+	for _, val := range m.validators {
+		if val.List == "jailed" {
+			jailedLeaderMisses += val.LeaderSuccessRate.NumFailure
+		}
+	}
+
 	snap := &Snapshot{
 		Epoch:     m.epoch,
 		HeadNonce: head,
@@ -528,6 +555,15 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 			}
 		}
 
+		chainMissed := v.ValidatorSuccessRate.NumFailure
+		missed := chainMissed
+		if elected {
+			missed -= jailedLeaderMisses
+			if missed < 0 {
+				missed = 0
+			}
+		}
+
 		vv := ValidatorView{
 			BLS:            node.BLS,
 			Name:           firstNonEmpty(v.Name, node.Name),
@@ -541,7 +577,8 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 			Produced:       v.LeaderSuccessRate.NumSuccess,
 			LeaderMisses:   v.LeaderSuccessRate.NumFailure,
 			Signed:         v.ValidatorSuccessRate.NumSuccess,
-			Missed:         v.ValidatorSuccessRate.NumFailure,
+			Missed:         missed,
+			ChainMissed:    chainMissed,
 			Timeline:       make([]TimelineCell, 0, m.window),
 		}
 

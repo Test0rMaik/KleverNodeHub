@@ -584,6 +584,80 @@ func TestMonitor_SkippedBlocksInTimeline(t *testing.T) {
 	}
 }
 
+// TestMonitor_JailedPeerAdjustment verifies that ValidatorSuccessRate.NumFailure
+// is reduced by jailed-peer leader misses only for elected managed validators:
+//   - elected "aa": 5 chain-reported misses; jailed peer "cc" has 5 leader misses →
+//     adjusted Missed=0, ChainMissed=5.
+//   - jailed managed "dd": 2 chain-reported misses; adjustment must NOT be applied
+//     (validator not elected) so Missed stays 2.
+func TestMonitor_JailedPeerAdjustment(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_, _ = fmt.Fprint(w, `{"data":{"blocks":[]}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"blocks":[
+			{"nonce":1,"epoch":1,"producerBLS":"aa","validators":["aa"]}
+		]}}`)
+	})
+	mux.HandleFunc("/v1.0/validator/list", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"data":{"validators":[
+			{"blsPublicKey":"aa","list":"elected",
+			 "leaderSuccessRate":{"numSuccess":0,"numFailure":0},
+			 "validatorSuccessRate":{"numSuccess":10,"numFailure":5}},
+			{"blsPublicKey":"cc","list":"jailed",
+			 "leaderSuccessRate":{"numSuccess":0,"numFailure":5},
+			 "validatorSuccessRate":{"numSuccess":0,"numFailure":0}},
+			{"blsPublicKey":"dd","list":"jailed",
+			 "leaderSuccessRate":{"numSuccess":0,"numFailure":7},
+			 "validatorSuccessRate":{"numSuccess":1,"numFailure":2}}
+		]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, 4)
+	nodes := func() []ManagedNode {
+		return []ManagedNode{
+			{BLS: "aa", Name: "elected-node"},
+			{BLS: "dd", Name: "jailed-node"},
+		}
+	}
+	m := NewMonitor(client, nodes, "mainnet", 1, 0)
+	m.tick(context.Background())
+
+	snap := m.Snapshot()
+	if len(snap.Validators) != 2 {
+		t.Fatalf("expected 2 validators, got %d", len(snap.Validators))
+	}
+
+	byName := make(map[string]ValidatorView)
+	for _, v := range snap.Validators {
+		byName[v.Name] = v
+	}
+
+	// Elected "aa": jailed peers cc+dd have 5+7=12 leader misses; aa has 5 chain
+	// misses → adjusted = max(0, 5-12) = 0.
+	aa := byName["elected-node"]
+	if aa.Missed != 0 {
+		t.Errorf("aa.Missed = %d, want 0 (all misses from jailed-peer skipped rounds)", aa.Missed)
+	}
+	if aa.ChainMissed != 5 {
+		t.Errorf("aa.ChainMissed = %d, want 5 (raw chain counter preserved)", aa.ChainMissed)
+	}
+
+	// Jailed managed "dd": NOT elected, so jailedLeaderMisses must NOT be subtracted
+	// from its ValidatorSuccessRate.NumFailure. dd.Missed must stay at 2.
+	dd := byName["jailed-node"]
+	if dd.Missed != 2 {
+		t.Errorf("dd.Missed = %d, want 2 (jailed validators must not self-subtract)", dd.Missed)
+	}
+	if dd.ChainMissed != 2 {
+		t.Errorf("dd.ChainMissed = %d, want 2", dd.ChainMissed)
+	}
+}
+
 func TestNormalizeBLS(t *testing.T) {
 	cases := map[string]string{
 		"0xAB":  "ab",

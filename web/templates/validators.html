@@ -414,7 +414,11 @@
                 '<td style="padding:10px;text-align:right;color:var(--text-secondary);">' + (v.on_chain ? fmtKLV(v.allowance) : '–') + '</td>' +
                 '<td style="padding:10px;text-align:right;color:var(--success);font-weight:600;">' + fmtInt(v.produced) + '</td>' +
                 '<td style="padding:10px;text-align:right;color:var(--text-secondary);">' + fmtInt(v.signed) + '</td>' +
-                '<td style="padding:10px;text-align:right;color:' + (v.missed > 0 ? 'var(--error)' : 'var(--text-secondary)') + ';font-weight:600;">' + fmtInt(v.missed) + '</td>' +
+                '<td style="padding:10px;text-align:right;color:' + (v.missed > 0 ? 'var(--error)' : 'var(--text-secondary)') + ';font-weight:600;"' +
+                    (v.chain_missed > v.missed ? ' title="Chain reports ' + fmtInt(v.chain_missed) + ' missed; ' + fmtInt(v.chain_missed - v.missed) + ' subtracted for jailed-peer skipped rounds"' : '') + '>' +
+                    fmtInt(v.missed) +
+                    (v.chain_missed > v.missed ? '<span style="font-size:10px;font-weight:400;opacity:0.5;margin-left:3px;">(chain:' + fmtInt(v.chain_missed) + ')</span>' : '') +
+                '</td>' +
                 '<td style="padding:10px;text-align:right;color:' + (v.leader_misses > 0 ? 'var(--warning)' : 'var(--text-secondary)') + ';">' + fmtInt(v.leader_misses) + '</td>' +
                 '</tr>';
         }).join('');
