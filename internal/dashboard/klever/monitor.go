@@ -430,8 +430,10 @@ func (m *Monitor) emitMetrics(managed []ManagedNode, stats map[string]RawValidat
 	if m.metrics == nil {
 		return
 	}
-	// Mirror the jailed-peer adjustment from buildLocked so alert thresholds on
-	// MetricMissedBlocks are not tripped by phantom misses from skipped rounds.
+	// Subtract jailed validators' leader misses from the epoch-level chain counter
+	// so alert thresholds on MetricMissedBlocks are not tripped by phantom misses
+	// from skipped rounds. This is an approximation; the display counter uses the
+	// timeline for exact results, but the timeline is not available here.
 	var jailedLeaderMisses int64
 	for _, val := range stats {
 		if val.List == "jailed" {
@@ -509,18 +511,6 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 	// "skipped" forever. In that case fall back to "idle" (same as pre-PR).
 	canMarkSkipped := (m.window+blockChunk-1)/blockChunk <= 1+m.maxPerTick
 
-	// On Klever, when an elected leader fails to produce their block (e.g. jailed),
-	// the round is empty and the chain increments ValidatorSuccessRate.NumFailure for
-	// ALL other elected validators (they couldn't sign a block that never existed).
-	// Subtracting the sum of jailed validators' LeaderSuccessRate.NumFailure yields
-	// the genuine missed-signing count for our managed validators.
-	var jailedLeaderMisses int64
-	for _, val := range m.validators {
-		if val.List == "jailed" {
-			jailedLeaderMisses += val.LeaderSuccessRate.NumFailure
-		}
-	}
-
 	snap := &Snapshot{
 		Epoch:     m.epoch,
 		HeadNonce: head,
@@ -555,15 +545,6 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 			}
 		}
 
-		chainMissed := v.ValidatorSuccessRate.NumFailure
-		missed := chainMissed
-		if elected {
-			missed -= jailedLeaderMisses
-			if missed < 0 {
-				missed = 0
-			}
-		}
-
 		vv := ValidatorView{
 			BLS:            node.BLS,
 			Name:           firstNonEmpty(v.Name, node.Name),
@@ -577,14 +558,16 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 			Produced:       v.LeaderSuccessRate.NumSuccess,
 			LeaderMisses:   v.LeaderSuccessRate.NumFailure,
 			Signed:         v.ValidatorSuccessRate.NumSuccess,
-			Missed:         missed,
-			ChainMissed:    chainMissed,
+			ChainMissed:    v.ValidatorSuccessRate.NumFailure,
 			Timeline:       make([]TimelineCell, 0, m.window),
 		}
 
-		// Iterate the full nonce range so genuinely absent nonces (blocks that
-		// were never produced, e.g. the leader was jailed) appear as "skipped"
-		// rather than being silently omitted from the timeline.
+		// Iterate the full nonce range. Absent nonces appear as "skipped" (jailed
+		// leader — block was never produced). "missed" means a block existed and
+		// the validator was in the elected signer set but absent from the actual
+		// signer list. vv.Missed counts only "missed" cells: skipped rounds never
+		// inflate it, so phantom epoch-counter inflation from jailed peers is
+		// automatically excluded.
 		for n := windowStart; n <= head; n++ {
 			rec, exists := m.have[n]
 			status := "idle"
@@ -597,6 +580,9 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 				if _, signed := rec.signers[bls]; !signed {
 					status = "missed"
 				}
+			}
+			if status == "missed" {
+				vv.Missed++
 			}
 			vv.Timeline = append(vv.Timeline, TimelineCell{Nonce: n, Status: status})
 		}

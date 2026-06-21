@@ -26,8 +26,8 @@ type ValidatorView struct {
 	Produced       int64          `json:"produced"`        // blocks led this epoch
 	LeaderMisses   int64          `json:"leader_misses"`
 	Signed         int64          `json:"signed"`
-	Missed         int64          `json:"missed"`       // adjusted: chain counter minus jailed-peer leader misses
-	ChainMissed    int64          `json:"chain_missed"` // raw chain ValidatorSuccessRate.NumFailure
+	Missed         int64          `json:"missed"`       // timeline-derived: "missed" cells in the rolling window (excludes skipped/jailed rounds)
+	ChainMissed    int64          `json:"chain_missed"` // raw chain ValidatorSuccessRate.NumFailure for the full epoch
 	Timeline       []TimelineCell `json:"timeline"`
 }
 

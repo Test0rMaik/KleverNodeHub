@@ -95,7 +95,7 @@
                         <div class="stat-card-body">
                             <div class="stat-card-label">PRODUCED / MISSED</div>
                             <div class="stat-card-value"><span id="vm-produced" class="text-accent">–</span> / <span id="vm-missed" style="color:var(--error);">–</span></div>
-                            <div class="stat-card-sub">this epoch</div>
+                            <div class="stat-card-sub">produced this epoch · missed in window</div>
                         </div>
                     </div>
                     <div class="stat-card">
@@ -415,7 +415,7 @@
                 '<td style="padding:10px;text-align:right;color:var(--success);font-weight:600;">' + fmtInt(v.produced) + '</td>' +
                 '<td style="padding:10px;text-align:right;color:var(--text-secondary);">' + fmtInt(v.signed) + '</td>' +
                 '<td style="padding:10px;text-align:right;color:' + (v.missed > 0 ? 'var(--error)' : 'var(--text-secondary)') + ';font-weight:600;"' +
-                    (v.chain_missed > v.missed ? ' title="Chain reports ' + fmtInt(v.chain_missed) + ' missed; ' + fmtInt(v.chain_missed - v.missed) + ' subtracted for jailed-peer skipped rounds"' : '') + '>' +
+                    (v.chain_missed > v.missed ? ' title="Chain epoch total: ' + fmtInt(v.chain_missed) + ' missed. Table shows ' + fmtInt(v.missed) + ' from the last 100 blocks (skipped/jailed-peer rounds excluded)."' : '') + '>' +
                     fmtInt(v.missed) +
                     (v.chain_missed > v.missed ? '<span style="font-size:10px;font-weight:400;opacity:0.5;margin-left:3px;">(chain:' + fmtInt(v.chain_missed) + ')</span>' : '') +
                 '</td>' +
