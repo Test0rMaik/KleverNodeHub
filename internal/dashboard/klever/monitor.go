@@ -80,6 +80,12 @@ type Monitor struct {
 	elect       *ElectionHistory
 	electLoaded bool
 
+	// nextTickStatRefresh is set (by the tick goroutine only) when a new epoch
+	// election is counted so the validator list is re-fetched on the very next
+	// tick. This gives the Klever API a second chance to show the updated elected
+	// state even if it lagged behind on the tick when the epoch was first observed.
+	nextTickStatRefresh bool
+
 	mu         sync.RWMutex
 	have       map[uint64]blockRec
 	validators map[string]RawValidator // normalized BLS -> stats
@@ -214,11 +220,16 @@ func (m *Monitor) updateElectionsLocked(month string, epoch uint64, managed []Ma
 		bucket = map[string]int{}
 		m.elect.History[month] = bucket
 	}
+	seen := make(map[string]struct{})
 	for _, node := range managed {
 		bls := normalizeBLS(node.BLS)
 		if bls == "" {
 			continue
 		}
+		if _, dup := seen[bls]; dup {
+			continue // two node records with the same BLS key must count once
+		}
+		seen[bls] = struct{}{}
 		if _, ok := elected[bls]; ok {
 			bucket[bls]++
 		}
@@ -300,8 +311,13 @@ func (m *Monitor) tick(ctx context.Context) {
 	mergeBlocks(m.have, newest, desiredStart, head)
 	m.pruneLocked(desiredStart, head)
 	missing := countMissing(m.have, desiredStart, head)
-	epochChanged := m.elect != nil && epoch > m.elect.LastEpoch
-	refreshStats := m.ticks%m.statsEvery == 0 || len(m.validators) == 0 || epochChanged
+	// epochChanged: true on the first tick of each new epoch, independent of
+	// election counting. Uses m.epoch (last tick's epoch) so it fires exactly
+	// once per epoch boundary without gating on the election store.
+	epochChanged := epoch != m.epoch
+	nextStatRefresh := m.nextTickStatRefresh
+	m.nextTickStatRefresh = false // consumed; may be re-set below if election counted
+	refreshStats := m.ticks%m.statsEvery == 0 || len(m.validators) == 0 || epochChanged || nextStatRefresh
 	m.mu.Unlock()
 
 	// Backfill older pages only while the window has gaps (i.e. on startup),
@@ -353,7 +369,17 @@ func (m *Monitor) tick(ctx context.Context) {
 	m.epoch = epoch
 	m.ticks++
 	m.lastErr = ""
+	prevLastEpoch := uint64(0)
+	if m.elect != nil {
+		prevLastEpoch = m.elect.LastEpoch
+	}
 	electionsDirty := m.updateElectionsLocked(month, epoch, managed)
+	// If a new epoch was just counted the validator list fetch that happened on
+	// this tick may have been stale (API lag at epoch boundaries). Force one
+	// extra fetch on the next tick so the displayed state updates promptly.
+	if m.elect != nil && m.elect.LastEpoch > prevLastEpoch {
+		m.nextTickStatRefresh = true
+	}
 	m.latest = m.buildLocked(head, managed)
 	stats := m.validators
 	var electPayload []byte

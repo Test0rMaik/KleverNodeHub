@@ -447,6 +447,43 @@ func TestMonitor_CountsFromBlocksDespiteValidatorListFailure(t *testing.T) {
 	}
 }
 
+// TestMonitor_DuplicateBLSCountsOnce guards the dedup fix in updateElectionsLocked:
+// if two managed node records share the same BLS key the election must be counted
+// exactly once per epoch, not once per duplicate node.
+func TestMonitor_DuplicateBLSCountsOnce(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") != "1" {
+			_, _ = fmt.Fprint(w, `{"data":{"blocks":[]}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"blocks":[{"nonce":500,"epoch":50,"producerBLS":"aa","validators":["aa"]}]}}`)
+	})
+	mux.HandleFunc("/v1.0/validator/list", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"data":{"validators":[]}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewClient(srv.URL, 4)
+	// Two node records with the same BLS key (can happen after a re-discovery).
+	nodes := func() []ManagedNode {
+		return []ManagedNode{
+			{ID: "node-1", BLS: "aa", Name: "primary"},
+			{ID: "node-2", BLS: "aa", Name: "duplicate"},
+		}
+	}
+	m := NewMonitor(client, nodes, "mainnet", 1, 0)
+	m.SetElectionStore(newFakeKV())
+
+	m.tick(context.Background())
+
+	hist := m.ElectionHistory()
+	if got := hist.History[hist.CurrentMonth]["aa"]; got != 1 {
+		t.Errorf("aa elections = %d, want 1 (duplicate BLS must not double-count)", got)
+	}
+}
+
 // TestMonitor_APIURLProviderOverridesLive verifies the monitor applies the
 // API-URL provider each tick, so a custom indexer URL takes effect without a
 // restart. The provider points at our mock; without it the client would target
