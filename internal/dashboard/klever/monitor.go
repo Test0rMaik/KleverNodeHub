@@ -311,10 +311,16 @@ func (m *Monitor) tick(ctx context.Context) {
 	mergeBlocks(m.have, newest, desiredStart, head)
 	m.pruneLocked(desiredStart, head)
 	missing := countMissing(m.have, desiredStart, head)
-	// epochChanged: true on the first tick of each new epoch, independent of
-	// election counting. Uses m.epoch (last tick's epoch) so it fires exactly
-	// once per epoch boundary without gating on the election store.
-	epochChanged := epoch != m.epoch
+	// epochChanged: true when the chain epoch advances. Two conditions are OR'd:
+	//   1. epoch != m.epoch — fires exactly once on the first tick of each new
+	//      epoch (m.epoch holds the previous tick's value, written in the second
+	//      lock section below — that ordering must be preserved).
+	//   2. m.elect != nil && epoch > m.elect.LastEpoch — keeps firing on every
+	//      subsequent tick of the same epoch until the election is successfully
+	//      counted. This covers the deferred-election case where the first tick
+	//      has no consensus signer data yet (len(elected)==0), so LastEpoch is
+	//      not advanced and the validator list must keep refreshing until it is.
+	epochChanged := epoch != m.epoch || (m.elect != nil && epoch > m.elect.LastEpoch)
 	nextStatRefresh := m.nextTickStatRefresh
 	m.nextTickStatRefresh = false // consumed; may be re-set below if election counted
 	refreshStats := m.ticks%m.statsEvery == 0 || len(m.validators) == 0 || epochChanged || nextStatRefresh
