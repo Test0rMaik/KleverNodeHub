@@ -7,7 +7,37 @@
 
 **Self-hosted management dashboard for Klever validator nodes**
 
+> **Fork notice:** This is [Test0rMaik/KleverNodeHub](https://github.com/Test0rMaik/KleverNodeHub), a fork of [CTJaeger/KleverNodeHub](https://github.com/CTJaeger/KleverNodeHub) with additional features not present in upstream. See [Fork Enhancements](#fork-enhancements) below.
+
 ![Dashboard Overview](docs/dash.png)
+
+---
+
+## Fork Enhancements
+
+Features exclusive to this fork (not in upstream):
+
+### Validator Monitoring Page
+A dedicated **Validators** page tracks your managed validators on-chain by BLS key:
+- **State & metrics** — elected/jailed/waiting state, commission, self-stake, allowance, blocks produced and missed per epoch
+- **Block-production timeline** — live 100-slot rolling timeline per validator showing produced, missed, and skipped blocks
+- **Skipped-block detection** — exposes nonce gaps caused by jailed-peer rounds so you can distinguish true misses from skips
+- **Per-epoch election attribution** — correct election counts with deferred-election handling at epoch boundaries
+- **Monthly election history chart** — elections won per month over time
+- **Validator alerts** — dedicated alert rules for validator-specific events (jailed, missed threshold, etc.)
+
+### Reliability Improvements
+- **SQLite contention fixes** — `busy_timeout` + WAL mode + batched metric purges eliminate `SQLITE_BUSY` crashes and intermittent "heartbeat stalled" agent offline alerts under DB load
+
+### Agent Update Enhancements
+- **Custom agent-update source** — configure a direct binary URL for agent updates (supports `-knh.N` fork version suffixes), so fork users aren't pointed at upstream release assets
+
+### Klever API Enhancements
+- **API URL override** — point the Hub at your own Klever indexer instead of the public endpoint
+- **Rate-limit handling** — automatic retry on HTTP 429 from the Klever API
+
+### Fork Versioning
+Releases are tagged `v<upstream-base>-knh.<n>` (e.g. `v0.3.81-knh.1`) so you can always trace which upstream version the fork is based on.
 
 ---
 
