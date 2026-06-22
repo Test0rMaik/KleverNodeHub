@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Klever Node Hub — Agent Installation Script
-# Usage: curl -sSL https://raw.githubusercontent.com/CTJaeger/KleverNodeHub/main/scripts/install-agent.sh | bash -s -- --token TOKEN --dashboard URL
+# Usage: curl -sSL https://raw.githubusercontent.com/Test0rMaik/KleverNodeHub/main/scripts/install-agent.sh | bash -s -- --token TOKEN --dashboard URL
 
 AGENT_BIN="/usr/local/bin/klever-agent"
 AGENT_CONFIG_DIR="/etc/klever-agent"
@@ -21,12 +21,14 @@ error() { echo -e "${RED}[✗]${RESET} $*" >&2; exit 1; }
 # Parse arguments
 TOKEN=""
 DASHBOARD_URL=""
+BINARY_URL_BASE=""  # optional: overrides the default GitHub release URL
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --token)    TOKEN="$2"; shift 2 ;;
-        --dashboard) DASHBOARD_URL="$2"; shift 2 ;;
-        *)          error "Unknown argument: $1" ;;
+        --token)           TOKEN="$2"; shift 2 ;;
+        --dashboard)       DASHBOARD_URL="$2"; shift 2 ;;
+        --binary-url-base) BINARY_URL_BASE="$2"; shift 2 ;;
+        *)                 error "Unknown argument: $1" ;;
     esac
 done
 
@@ -96,7 +98,23 @@ else
 fi
 
 # Download agent binary
-RELEASE_URL="https://github.com/CTJaeger/KleverNodeHub/releases/latest/download/klever-agent-${GOOS}-${GOARCH}"
+# Resolve the binary URL from --binary-url-base (same 3-form logic as the
+# dashboard's agentBinaryURL helper) or fall back to the fork's GitHub release.
+if [[ -n "$BINARY_URL_BASE" ]]; then
+    if [[ "$BINARY_URL_BASE" == *"{os}"* ]] || [[ "$BINARY_URL_BASE" == *"{arch}"* ]]; then
+        # Template form: replace {os} and {arch} placeholders.
+        RELEASE_URL="${BINARY_URL_BASE//\{os\}/$GOOS}"
+        RELEASE_URL="${RELEASE_URL//\{arch\}/$GOARCH}"
+    elif [[ "$BINARY_URL_BASE" == */ ]]; then
+        # Base-directory form: append the conventional binary name.
+        RELEASE_URL="${BINARY_URL_BASE}klever-agent-${GOOS}-${GOARCH}"
+    else
+        # Direct-file form: use as-is.
+        RELEASE_URL="$BINARY_URL_BASE"
+    fi
+else
+    RELEASE_URL="https://github.com/Test0rMaik/KleverNodeHub/releases/latest/download/klever-agent-${GOOS}-${GOARCH}"
+fi
 
 log "Downloading agent binary..."
 if ! curl -sSL -o /tmp/klever-agent "$RELEASE_URL"; then

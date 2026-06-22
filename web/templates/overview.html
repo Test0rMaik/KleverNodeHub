@@ -1729,11 +1729,18 @@
         }
 
         async function generateToken() {
-            const result = await API.postJSON('/api/registration/token', {});
-            if (result && result.ok) {
-                const token = result.data.token;
+            const [tokenResult, settingsResult] = await Promise.all([
+                API.postJSON('/api/registration/token', {}),
+                API.getJSON('/api/settings'),
+            ]);
+            if (tokenResult && tokenResult.ok) {
+                const token = tokenResult.data.token;
                 const dashboardURL = window.location.origin;
-                const cmd = 'curl -sSL https://raw.githubusercontent.com/Test0rMaik/KleverNodeHub/main/scripts/install-agent.sh | sudo bash -s -- --token ' + token + ' --dashboard ' + dashboardURL;
+                let cmd = 'curl -sSL https://raw.githubusercontent.com/Test0rMaik/KleverNodeHub/main/scripts/install-agent.sh | sudo bash -s -- --token ' + token + ' --dashboard ' + dashboardURL;
+                const agentUpdateURL = settingsResult?.data?.agents?.agent_update_url?.trim();
+                if (agentUpdateURL) {
+                    cmd += ' --binary-url-base ' + agentUpdateURL;
+                }
                 document.getElementById('install-command').textContent = cmd;
                 document.getElementById('token-display').classList.remove('hidden');
             }
