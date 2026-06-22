@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -52,21 +53,20 @@ func (a *Agent) Config() *Config {
 }
 
 // TLSConfig builds a tls.Config using the agent's mTLS credentials.
-// The returned config trusts the dashboard CA and presents the agent's
-// client certificate, AND verifies the dashboard's server certificate
-// against the CA the agent stored at registration time.
 //
-// The CA we already load was previously ignored: InsecureSkipVerify was
-// set to true on the assumption that mTLS alone was sufficient. It is
-// not — mTLS only ensures the dashboard authenticates the agent, not
-// the reverse. Without verifying the dashboard's cert against the
-// stored CA, an attacker who has stolen any client cert can intercept
-// the connection.
+// Verification uses a dual-strategy VerifyPeerCertificate callback so that
+// the same config works for both deployment topologies:
 //
-// ServerName is pinned to "localhost" because crypto.DashboardTLSConfig
-// issues the dashboard's server certificate with DNSNames: ["localhost"]
-// regardless of the host/IP the agent dials. The cert is still signed
-// by the trusted CA, so verifying against that SAN proves authenticity.
+//   - Direct connection (dashboard on localhost or a LAN host): the dashboard
+//     serves its own self-signed cert (SAN = "localhost"), verified against the
+//     dashboard CA received at registration time.
+//
+//   - Reverse-proxy deployment (nginx/caddy terminates TLS with a public cert,
+//     e.g. Let's Encrypt): the proxy serves a cert for the public domain,
+//     verified against the system root CAs.
+//
+// InsecureSkipVerify is set to true only to allow VerifyPeerCertificate to
+// run both strategies; the callback enforces at least one must pass.
 func (a *Agent) TLSConfig() (*tls.Config, error) {
 	if a.config == nil {
 		return nil, fmt.Errorf("agent not configured")
@@ -77,16 +77,68 @@ func (a *Agent) TLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("load client certificate: %w", err)
 	}
 
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM([]byte(a.config.CACertPEM)) {
+	// Dashboard CA — required; fail fast if the stored PEM is corrupt or absent.
+	dashCA := x509.NewCertPool()
+	if !dashCA.AppendCertsFromPEM([]byte(a.config.CACertPEM)) {
 		return nil, fmt.Errorf("parse CA certificate")
 	}
 
+	// System root CAs — best-effort for the reverse-proxy case.
+	sysPool, _ := x509.SystemCertPool()
+	if sysPool == nil {
+		sysPool = x509.NewCertPool()
+	}
+
+	// SNI hostname sent in the TLS ClientHello. A reverse proxy uses this to
+	// select the right certificate; for direct connections "localhost" is fine.
+	serverName := "localhost"
+	if a.config.DashboardURL != "" {
+		if u, parseErr := url.Parse(a.config.DashboardURL); parseErr == nil && u.Hostname() != "" {
+			serverName = u.Hostname()
+		}
+	}
+
 	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caCertPool,
-		ServerName:   "localhost",
-		MinVersion:   tls.VersionTLS13,
+		Certificates:       []tls.Certificate{cert},
+		ServerName:         serverName,
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true, //nolint:gosec // VerifyPeerCertificate below enforces cert trust
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return fmt.Errorf("server sent no certificate")
+			}
+			leaf, err := x509.ParseCertificate(rawCerts[0])
+			if err != nil {
+				return fmt.Errorf("parse server certificate: %w", err)
+			}
+			intermediates := x509.NewCertPool()
+			for _, raw := range rawCerts[1:] {
+				if c, parseErr := x509.ParseCertificate(raw); parseErr == nil {
+					intermediates.AddCert(c)
+				}
+			}
+
+			// Strategy 1: system CAs + URL hostname (reverse-proxy deployment).
+			if _, err := leaf.Verify(x509.VerifyOptions{
+				Roots:         sysPool,
+				Intermediates: intermediates,
+				DNSName:       serverName,
+			}); err == nil {
+				return nil
+			}
+
+			// Strategy 2: dashboard CA + "localhost" (direct connection — the
+			// dashboard self-signed cert always has SAN "localhost").
+			if _, err := leaf.Verify(x509.VerifyOptions{
+				Roots:         dashCA,
+				Intermediates: intermediates,
+				DNSName:       "localhost",
+			}); err == nil {
+				return nil
+			}
+
+			return fmt.Errorf("server certificate not trusted by system CAs for %q or by dashboard CA for localhost", serverName)
+		},
 	}, nil
 }
 
