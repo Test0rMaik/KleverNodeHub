@@ -165,8 +165,9 @@ if ! "${AGENT_BIN}" --register-token "$TOKEN" --dashboard-url "$DASHBOARD_URL" -
     error "Registration failed"
 fi
 
-# Start the service
-systemctl start "${SERVICE_NAME}"
+# Start or restart the service (restart is a no-op if not yet running,
+# and picks up the new binary when reinstalling over an existing agent).
+systemctl restart "${SERVICE_NAME}"
 log "Agent started successfully!"
 log ""
 log "Commands:"
