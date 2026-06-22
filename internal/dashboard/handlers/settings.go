@@ -40,6 +40,10 @@ var settingsCategories = map[string][]string{
 	},
 	"klever": {
 		"klever_api_url",
+		"indexer_node_url",
+		"indexer_es_url",
+		"indexer_es_user",
+		"indexer_es_pass",
 	},
 }
 
@@ -56,6 +60,10 @@ var settingsDefaults = map[string]string{
 	"agent_update_url":             "",
 	"agent_update_version":         "",
 	"klever_api_url":               "",
+	"indexer_node_url":             "",
+	"indexer_es_url":               "",
+	"indexer_es_user":              "",
+	"indexer_es_pass":              "",
 }
 
 // HandleGetAll handles GET /api/settings — returns all settings grouped by category.

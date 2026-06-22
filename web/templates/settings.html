@@ -261,6 +261,37 @@
                             <input class="form-input" id="s-klever_api_url" type="text" placeholder="(blank = official Klever API)">
                         </div>
                     </div>
+                    <div class="settings-section">
+                        <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:14px;">Indexer Node</div>
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Node REST API URL</div>
+                                <div class="setting-desc">Base URL of the self-hosted Klever observer/indexer node REST API. The node exposes this at the interface set via <code>--rest-api-interface</code> (default <code>http://localhost:8080</code>). Used by the Indexer page. Leave blank to disable the Indexer page.</div>
+                            </div>
+                            <input class="form-input" id="s-indexer_node_url" type="text" placeholder="http://localhost:8080">
+                        </div>
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Elasticsearch URL</div>
+                                <div class="setting-desc">Base URL of the Elasticsearch instance used by your indexer node. Typically <code>http://localhost:9200</code>. Leave blank to disable the Elasticsearch health section on the Indexer page.</div>
+                            </div>
+                            <input class="form-input" id="s-indexer_es_url" type="text" placeholder="http://localhost:9200">
+                        </div>
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Elasticsearch Username</div>
+                                <div class="setting-desc">Username for Elasticsearch basic authentication. Leave blank if your ES instance has no authentication enabled.</div>
+                            </div>
+                            <input class="form-input" id="s-indexer_es_user" type="text" placeholder="elastic">
+                        </div>
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Elasticsearch Password</div>
+                                <div class="setting-desc">Password for Elasticsearch basic authentication. Stored in the local settings database. Leave blank if authentication is not required.</div>
+                            </div>
+                            <input class="form-input" id="s-indexer_es_pass" type="password" placeholder="••••••••">
+                        </div>
+                    </div>
                     <div class="section-actions">
                         <button class="btn btn-primary btn-sm" onclick="saveSection('klever')">Save</button>
                         <button class="btn btn-secondary btn-sm" onclick="resetSection('klever')">Reset to Defaults</button>
@@ -284,7 +315,7 @@
             metrics: ['metrics_interval_sec', 'node_poll_interval_sec', 'hot_retention_days', 'archive_retention_days'],
             notifications: ['notify_default_severity'],
             agents: ['heartbeat_timeout_sec', 'agent_discovery_interval_sec', 'agent_update_url', 'agent_update_version'],
-            klever: ['klever_api_url']
+            klever: ['klever_api_url', 'indexer_node_url', 'indexer_es_url', 'indexer_es_user', 'indexer_es_pass']
         };
 
         function toggleSidebar() {

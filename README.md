@@ -17,6 +17,15 @@
 
 Features exclusive to this fork (not in upstream):
 
+### Indexer Status Page
+A dedicated **Indexer** page monitors a self-hosted Klever observer/indexer node and its Elasticsearch backend:
+- **Sync status** — live indicator whether the node is synced with the chain, plus current nonce, chain head, and block lag
+- **Node health** — connected peers, uptime, epoch, transactions processed, consensus state
+- **Resource gauges** — visual CPU / memory / disk usage bars with colour-coded thresholds, DB size, disk free, and network I/O
+- **Version tracking** — running version vs. latest release tag with an "update available" badge
+- **Elasticsearch cluster health** — cluster name, status (green / yellow / red), node count, shard breakdown (active, primary, unassigned, coverage %)
+- Configurable via Settings → Klever (node REST API URL, ES URL, ES credentials); degrades gracefully when not configured or unreachable
+
 ### Validator Monitoring Page
 A dedicated **Validators** page tracks your managed validators on-chain by BLS key:
 - **State & metrics** — elected/jailed/waiting state, commission, self-stake, allowance, blocks produced and missed per epoch
@@ -278,7 +287,7 @@ KleverNodeHub/
 │   ├── crypto/                    # AES-256-GCM, Ed25519, mTLS, CA
 │   ├── dashboard/                 # HTTP server, tag cache, GeoIP, token manager
 │   │   ├── alerting/              # Alert evaluator, default rules, version regression
-│   │   ├── handlers/              # HTTP handlers (nodes, servers, docker, config, keys, alerts, provision, restore, cleanup, validators, ...)
+│   │   ├── handlers/              # HTTP handlers (nodes, servers, docker, config, keys, alerts, provision, restore, cleanup, validators, indexer, ...)
 │   │   ├── klever/                # Klever chain client + validator block-production monitor
 │   │   ├── scheduler/             # Metrics retention scheduler
 │   │   └── ws/                    # WebSocket hub, agent handler, browser handler
@@ -288,7 +297,7 @@ KleverNodeHub/
 │   ├── notify/                    # Telegram, Pushover, webhook dispatchers
 │   └── version/                   # Build version info
 ├── web/
-│   ├── templates/                 # HTML templates (overview, server, node, validators, alerts, settings, login, batchconfig, slotinspector, docker-cleanup)
+│   ├── templates/                 # HTML templates (overview, server, node, validators, indexer, alerts, settings, login, batchconfig, slotinspector, docker-cleanup)
 │   └── static/                    # JS (api, app, charts, datatable, login, passkey, klever, version, ws) + CSS + service worker
 ├── scripts/                       # Agent install script
 ├── docs/                          # PRD and documentation

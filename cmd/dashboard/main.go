@@ -22,6 +22,7 @@ import (
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard"
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard/alerting"
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard/handlers"
+	"github.com/CTJaeger/KleverNodeHub/internal/dashboard/indexer"
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard/klever"
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard/scheduler"
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard/ws"
@@ -231,6 +232,22 @@ func main() {
 	monitorCtx, stopMonitor := context.WithCancel(context.Background())
 	validatorMonitor.Start(monitorCtx)
 
+	// --- Indexer monitor (self-hosted Klever observer node + Elasticsearch) ---
+	resolveIndexerConfig := func() indexer.Config {
+		nodeURL, _ := settingsStore.Get("indexer_node_url")
+		esURL, _ := settingsStore.Get("indexer_es_url")
+		esUser, _ := settingsStore.Get("indexer_es_user")
+		esPass, _ := settingsStore.Get("indexer_es_pass")
+		return indexer.Config{
+			NodeURL: strings.TrimSpace(nodeURL),
+			ESURL:   strings.TrimSpace(esURL),
+			ESUser:  strings.TrimSpace(esUser),
+			ESPass:  strings.TrimSpace(esPass),
+		}
+	}
+	indexerMonitor := indexer.NewMonitor(resolveIndexerConfig, 30*time.Second)
+	indexerMonitor.Start(monitorCtx)
+
 	// --- WebSocket Hub ---
 	// Reset all servers to offline on startup; agents will set online when they connect
 	if err := serverStore.ResetAllStatus("offline"); err != nil {
@@ -258,6 +275,7 @@ func main() {
 	keyHandler := handlers.NewKeyHandler(hub, nodeStore)
 	provisionHandler := handlers.NewProvisionHandler(hub)
 	validatorsHandler := handlers.NewValidatorsHandler(validatorMonitor)
+	indexerHandler := handlers.NewIndexerHandler(indexerMonitor)
 	notifyManager := notify.NewManager()
 	handlers.LoadSavedChannels(settingsStore, notifyManager)
 	notifyHandler := handlers.NewNotificationHandler(notifyManager, settingsStore)
@@ -361,6 +379,7 @@ func main() {
 	mux.Handle("PATCH /api/servers/{id}", authMw(http.HandlerFunc(serverHandler.HandleUpdateServer)))
 	mux.Handle("DELETE /api/servers/{id}", authMw(http.HandlerFunc(serverHandler.HandleDelete)))
 	mux.Handle("GET /api/validators", authMw(http.HandlerFunc(validatorsHandler.HandleSnapshot)))
+	mux.Handle("GET /api/indexer/status", authMw(http.HandlerFunc(indexerHandler.HandleSnapshot)))
 	mux.Handle("GET /api/validators/elections", authMw(http.HandlerFunc(validatorsHandler.HandleElections)))
 	mux.Handle("GET /api/nodes", authMw(http.HandlerFunc(serverHandler.HandleListNodes)))
 	mux.Handle("GET /api/nodes/{id}", authMw(http.HandlerFunc(serverHandler.HandleGetNode)))
