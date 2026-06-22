@@ -40,6 +40,7 @@ A dedicated **Validators** page tracks your managed validators on-chain by BLS k
 
 ### Agent Update Enhancements
 - **Custom agent-update source** — configure a direct binary URL for agent updates (supports `-knh.N` fork version suffixes), so fork users aren't pointed at upstream release assets
+- **Fork install script** — the Add New Server install command pulls `install-agent.sh` from this fork's repository, ensuring new agent installations use the correct binary
 
 ### Klever API Enhancements
 - **API URL override** — point the Hub at your own Klever indexer instead of the public endpoint
