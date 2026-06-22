@@ -117,8 +117,15 @@ else
 fi
 
 log "Downloading agent binary..."
-if ! curl -sSL -o /tmp/klever-agent "$RELEASE_URL"; then
-    error "Failed to download agent binary"
+if ! curl -fsSL -o /tmp/klever-agent "$RELEASE_URL"; then
+    error "Failed to download agent binary from: ${RELEASE_URL}"
+fi
+
+# Verify the download is actually an ELF binary, not an HTML error page.
+MAGIC=$(head -c 4 /tmp/klever-agent | od -A n -t x1 | tr -d ' \n')
+if [[ "$MAGIC" != "7f454c46" ]]; then
+    rm -f /tmp/klever-agent
+    error "Downloaded file is not a valid ELF binary (got content type error or 404). Check the binary URL: ${RELEASE_URL}"
 fi
 
 chmod +x /tmp/klever-agent
