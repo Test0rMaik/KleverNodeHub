@@ -157,6 +157,48 @@
             font-weight: 700;
             letter-spacing: 0.04em;
         }
+        /* Inline info-tooltip badge */
+        .ix-tip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            color: var(--bg-card, #1a1f2e);
+            font-size: 9px;
+            font-weight: 700;
+            cursor: help;
+            position: relative;
+            margin-left: 5px;
+            vertical-align: middle;
+            flex-shrink: 0;
+        }
+        .ix-tip::after {
+            content: attr(data-tip);
+            position: absolute;
+            bottom: calc(100% + 7px);
+            left: 50%;
+            transform: translateX(-50%);
+            width: 240px;
+            background: var(--bg-secondary, #252b3b);
+            color: var(--text-primary, #e2e8f0);
+            font-size: 11px;
+            font-weight: 400;
+            line-height: 1.55;
+            padding: 8px 11px;
+            border-radius: 7px;
+            border: 1px solid var(--border, #2d3748);
+            white-space: normal;
+            text-transform: none;
+            letter-spacing: 0;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 100;
+        }
+        .ix-tip:hover::after { opacity: 1; }
     </style>
     <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#0d1117">
@@ -383,7 +425,7 @@
                                         <tr>
                                             <th>Active Shards</th>
                                             <th>Primary Shards</th>
-                                            <th>Unassigned</th>
+                                            <th>Unassigned <span class="ix-tip" data-tip="Shards with no available node to host them. On a single-node cluster all replica shards are permanently unassigned — this is normal and does not affect data. A multi-node cluster should have 0 unassigned shards.">?</span></th>
                                             <th>Shard Coverage</th>
                                         </tr>
                                     </thead>
@@ -554,6 +596,13 @@
             var unassEl = document.getElementById('ix-es-unassigned');
             unassEl.textContent = fmtInt(s.es_unassigned_shards);
             unassEl.style.color = s.es_unassigned_shards > 0 ? 'var(--warning)' : '';
+            if (s.es_unassigned_shards > 0 && s.es_nodes <= 1) {
+                unassEl.title = 'These are replica shards — normal on a single-node cluster. Elasticsearch cannot place a replica on the same node as its primary. Add a second ES node to eliminate unassigned shards.';
+            } else if (s.es_unassigned_shards > 0) {
+                unassEl.title = 'Some shards are unassigned on a multi-node cluster — investigate via ES cluster allocation explain API.';
+            } else {
+                unassEl.title = '';
+            }
 
             var pct = s.es_shards_percent != null ? s.es_shards_percent.toFixed(1) + '%' : '–';
             document.getElementById('ix-es-coverage').textContent = pct;
