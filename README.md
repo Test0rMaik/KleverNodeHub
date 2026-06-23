@@ -26,6 +26,8 @@ A dedicated **Indexer** page monitors a self-hosted Klever observer/indexer node
 - **Elasticsearch cluster health** — cluster name, status (green / yellow / red), node count, shard breakdown (active, primary, unassigned, coverage %)
 - Configurable via Settings → Klever (node REST API URL, ES URL, ES credentials); degrades gracefully when not configured or unreachable
 
+![Indexer Status Page](docs/indexer.png)
+
 ### Validator Monitoring Page
 A dedicated **Validators** page tracks your managed validators on-chain by BLS key:
 - **State & metrics** — elected/jailed/waiting state, commission, self-stake, allowance, blocks produced and missed per epoch
