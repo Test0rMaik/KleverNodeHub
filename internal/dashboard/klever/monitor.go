@@ -86,6 +86,13 @@ type Monitor struct {
 	// state even if it lagged behind on the tick when the epoch was first observed.
 	nextTickStatRefresh bool
 
+	// epochMisses accumulates per-BLS missed-signing counts across the whole
+	// current epoch, reset on each epoch boundary. This gives the full epoch
+	// miss count rather than the rolling-window-only view.
+	epochMissEpoch uint64
+	epochMisses    map[string]int64    // normalized BLS -> misses this epoch
+	epochSeenNonce map[uint64]struct{} // nonces already scored (dedup across ticks)
+
 	mu         sync.RWMutex
 	have       map[uint64]blockRec
 	validators map[string]RawValidator // normalized BLS -> stats
@@ -106,15 +113,17 @@ func NewMonitor(client *Client, nodes NodesFunc, network string, window int, int
 		interval = 6 * time.Second
 	}
 	return &Monitor{
-		client:     client,
-		nodes:      nodes,
-		network:    network,
-		window:     window,
-		interval:   interval,
-		maxPerTick: 8, // gentle backfill: fills the 100-block window over a few ticks
-		statsEvery: 5, // refresh validator stats every 5 ticks
-		have:       make(map[uint64]blockRec),
-		validators: make(map[string]RawValidator),
+		client:         client,
+		nodes:          nodes,
+		network:        network,
+		window:         window,
+		interval:       interval,
+		maxPerTick:     8, // gentle backfill: fills the 100-block window over a few ticks
+		statsEvery:     5, // refresh validator stats every 5 ticks
+		have:           make(map[uint64]blockRec),
+		validators:     make(map[string]RawValidator),
+		epochMisses:    make(map[string]int64),
+		epochSeenNonce: make(map[uint64]struct{}),
 	}
 }
 
@@ -375,6 +384,7 @@ func (m *Monitor) tick(ctx context.Context) {
 	m.epoch = epoch
 	m.ticks++
 	m.lastErr = ""
+	m.trackEpochMissesLocked(epoch, newest, backfill, managed)
 	prevLastEpoch := uint64(0)
 	if m.elect != nil {
 		prevLastEpoch = m.elect.LastEpoch
@@ -493,6 +503,52 @@ func (m *Monitor) recordError(err error) {
 	log.Printf("validator-monitor: %v", err)
 }
 
+// trackEpochMissesLocked accumulates missed-signing counts across the full
+// current epoch. Called inside m.mu.Lock() after m.validators and m.epoch are
+// updated. blocks1/blocks2 are the newest + backfill IndexerBlock slices from
+// this tick; epochSeenNonce deduplicates nonces across ticks so a block is
+// scored exactly once per epoch.
+func (m *Monitor) trackEpochMissesLocked(epoch uint64, blocks1, blocks2 []IndexerBlock, managed []ManagedNode) {
+	if epoch != m.epochMissEpoch {
+		m.epochMissEpoch = epoch
+		m.epochMisses = make(map[string]int64)
+		m.epochSeenNonce = make(map[uint64]struct{})
+	}
+
+	// Build the currently-elected set of managed BLS keys.
+	elected := make(map[string]struct{}, len(managed))
+	for _, node := range managed {
+		bls := normalizeBLS(node.BLS)
+		if bls == "" {
+			continue
+		}
+		if v, ok := m.validators[bls]; ok && v.List == "elected" {
+			elected[bls] = struct{}{}
+		}
+	}
+
+	score := func(blocks []IndexerBlock) {
+		for i := range blocks {
+			b := &blocks[i]
+			if _, seen := m.epochSeenNonce[b.Nonce]; b.Epoch != epoch || seen || len(b.Validators) == 0 {
+				continue
+			}
+			m.epochSeenNonce[b.Nonce] = struct{}{}
+			signers := make(map[string]struct{}, len(b.Validators))
+			for _, s := range b.Validators {
+				signers[normalizeBLS(s)] = struct{}{}
+			}
+			for bls := range elected {
+				if _, ok := signers[bls]; !ok {
+					m.epochMisses[bls]++
+				}
+			}
+		}
+	}
+	score(blocks1)
+	score(blocks2)
+}
+
 // buildLocked renders the snapshot from current state. Caller holds m.mu.
 // windowStart is desiredStart from tick() — the first nonce of the rolling
 // window as already used for mergeBlocks/pruneLocked, passed in to avoid
@@ -586,11 +642,11 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 					status = "missed"
 				}
 			}
-			if status == "missed" {
-				vv.Missed++
-			}
 			vv.Timeline = append(vv.Timeline, TimelineCell{Nonce: n, Status: status})
 		}
+		// Full-epoch miss count from the accumulator (covers the entire epoch, not
+		// just the rolling window). Consistent with what the table column shows.
+		vv.Missed = m.epochMisses[bls]
 
 		snap.Validators = append(snap.Validators, vv)
 
@@ -599,11 +655,7 @@ func (m *Monitor) buildLocked(head, windowStart uint64, managed []ManagedNode) *
 		snap.Summary.TotalAllowance += vv.Allowance
 		snap.Summary.Produced += vv.Produced
 		if state == "elected" {
-			// ChainMissed is the chain's per-epoch NumFailure counter — it covers
-			// the full epoch (not just the window) and resets each epoch.  Guard
-			// with "elected" so jailed/waiting validators don't contribute their
-			// accumulated historical NumFailure to the summary card.
-			snap.Summary.Missed += vv.ChainMissed
+			snap.Summary.Missed += vv.Missed
 		}
 		switch state {
 		case "elected":

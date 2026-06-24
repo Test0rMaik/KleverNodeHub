@@ -26,8 +26,8 @@ type ValidatorView struct {
 	Produced       int64          `json:"produced"`        // blocks led this epoch
 	LeaderMisses   int64          `json:"leader_misses"`
 	Signed         int64          `json:"signed"`
-	Missed         int64          `json:"missed"`       // timeline-derived: "missed" cells in the rolling window (excludes skipped/jailed rounds)
-	ChainMissed    int64          `json:"chain_missed"` // raw chain ValidatorSuccessRate.NumFailure for the full epoch
+	Missed         int64          `json:"missed"`       // epoch-accumulated: missed signings since epoch start (excludes empty-signer blocks)
+	ChainMissed    int64          `json:"chain_missed"` // raw chain ValidatorSuccessRate.NumFailure (may be 0 mid-epoch on some API versions)
 	Timeline       []TimelineCell `json:"timeline"`
 }
 
@@ -39,7 +39,7 @@ type Summary struct {
 	TotalStaking   float64 `json:"total_staking"`   // KLV
 	TotalAllowance float64 `json:"total_allowance"` // KLV
 	Produced       int64   `json:"produced"`
-	Missed         int64   `json:"missed"` // chain epoch total (ChainMissed) for elected validators only; resets each epoch
+	Missed         int64   `json:"missed"` // epoch-accumulated miss count for elected validators; resets each epoch
 }
 
 // Snapshot is the full payload served to the validators page.

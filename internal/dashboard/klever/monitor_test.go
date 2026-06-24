@@ -585,13 +585,13 @@ func TestMonitor_SkippedBlocksInTimeline(t *testing.T) {
 }
 
 // TestMonitor_TimelineBasedMissedCount verifies that the Missed counter is
-// derived from timeline "missed" cells (blocks that existed but the validator
-// didn't sign) rather than the chain's epoch-level ValidatorSuccessRate.NumFailure
-// counter (which is inflated by jailed-peer skipped rounds). The test sets up:
+// derived from the epoch-miss accumulator (blocks that existed but the validator
+// didn't sign) rather than the chain's ValidatorSuccessRate.NumFailure counter
+// (which can be 0 mid-epoch or inflated by jailed-peer skipped rounds). Test:
 //   - nonce 2 absent (jailed leader skipped it → "skipped" cell, not "missed")
 //   - nonce 3 exists but "aa" is absent from the signer set → genuine "missed"
 //
-// Chain reports NumFailure=10 (phantom misses + 1 genuine); Missed must be 1.
+// Chain reports NumFailure=10; epoch accumulator sees 1 genuine miss → Missed=1.
 func TestMonitor_TimelineBasedMissedCount(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1.0/block/list", func(w http.ResponseWriter, r *http.Request) {
@@ -649,10 +649,10 @@ func TestMonitor_TimelineBasedMissedCount(t *testing.T) {
 	if v.ChainMissed != 10 {
 		t.Errorf("ChainMissed = %d, want 10 (raw chain counter)", v.ChainMissed)
 	}
-	// Summary.Missed uses ChainMissed (epoch total from chain) so it covers the
-	// full epoch even for misses outside the 100-block window.
-	if snap.Summary.Missed != 10 {
-		t.Errorf("Summary.Missed = %d, want 10 (chain epoch total)", snap.Summary.Missed)
+	// Summary.Missed uses the epoch accumulator, so it reflects what we've
+	// actually observed: 1 genuine miss at nonce 3.
+	if snap.Summary.Missed != 1 {
+		t.Errorf("Summary.Missed = %d, want 1 (epoch-accumulated miss count)", snap.Summary.Missed)
 	}
 }
 
@@ -715,10 +715,10 @@ func TestMonitor_EpochBoundaryNoCrossEpochMisses(t *testing.T) {
 	if v.Missed != 1 {
 		t.Errorf("Missed = %d, want 1 (only nonce 3 is a current-epoch miss)", v.Missed)
 	}
-	// Summary.Missed must use ChainMissed (numFailure=5), not vv.Missed (timeline=1),
-	// so an epoch miss count from before the window is not lost.
-	if snap.Summary.Missed != 5 {
-		t.Errorf("Summary.Missed = %d, want 5 (chain epoch total, not window-based timeline count)", snap.Summary.Missed)
+	// Summary.Missed uses the epoch accumulator: epoch 41 blocks are skipped
+	// (wrong epoch), only nonce 3 in epoch 42 is counted → 1.
+	if snap.Summary.Missed != 1 {
+		t.Errorf("Summary.Missed = %d, want 1 (epoch-accumulated, cross-epoch blocks excluded)", snap.Summary.Missed)
 	}
 }
 
