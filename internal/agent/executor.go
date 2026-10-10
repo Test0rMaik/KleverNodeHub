@@ -37,6 +37,8 @@ var longRunningTimeouts = map[string]time.Duration{
 	"server.benchmark": 10 * time.Minute,
 	"node.upgrade":     15 * time.Minute,
 	"node.restore-db":  6 * time.Hour,
+	// Update binary is pulled over HTTP; the default 60s would cancel a slow download.
+	"agent.update": 10 * time.Minute,
 	// Fast-reset stops the node (up to 30s) then deletes the DB and recreates
 	// the container — seconds of work, but give it headroom for a large DB.
 	"node.reset-db": 15 * time.Minute,
@@ -71,6 +73,8 @@ func (e *Executor) SetUpdateSource(dashboardURL string, tlsConfig *tls.Config) {
 	e.updateClient = &http.Client{
 		Timeout:   10 * time.Minute, // large binary over a possibly slow link
 		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		// Never follow redirects: the binary must come from the dashboard itself.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 }
 
@@ -81,6 +85,9 @@ func (e *Executor) SetUpdateSource(dashboardURL string, tlsConfig *tls.Config) {
 func (e *Executor) downloadUpdateBinary(ctx context.Context, path string) ([]byte, error) {
 	if e.updateClient == nil || e.dashboardURL == "" {
 		return nil, fmt.Errorf("update source not configured")
+	}
+	if !strings.HasPrefix(path, "/api/agent/binary/") {
+		return nil, fmt.Errorf("unexpected download path")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.dashboardURL+path, nil)
 	if err != nil {
@@ -95,8 +102,21 @@ func (e *Executor) downloadUpdateBinary(ctx context.Context, path string) ([]byt
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("dashboard returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	return io.ReadAll(resp.Body)
+	// Cap the read: a real agent binary is tens of MB; a hostile or broken
+	// peer must not be able to exhaust agent memory.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxUpdateBinaryBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxUpdateBinaryBytes {
+		return nil, fmt.Errorf("update binary exceeds %d bytes", maxUpdateBinaryBytes)
+	}
+	return data, nil
 }
+
+// maxUpdateBinaryBytes bounds an HTTP-downloaded agent update (dashboard
+// uploads are limited to 100 MB as well).
+const maxUpdateBinaryBytes = 100 << 20
 
 // NewExecutorWithClient creates an executor with a specific Docker client (for testing).
 func NewExecutorWithClient(client *DockerClient) *Executor {

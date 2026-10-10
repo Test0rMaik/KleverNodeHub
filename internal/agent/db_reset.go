@@ -41,7 +41,13 @@ func ResetDBFastBootstrap(ctx context.Context, docker *DockerClient, req *models
 	if req.DataDir == "" {
 		return fmt.Errorf("data_dir is required")
 	}
-	dbDir := filepath.Join(req.DataDir, "db")
+	// Defence in depth: the destructive RemoveAll below must only ever hit a
+	// "db" directory inside an absolute, non-root data dir.
+	dataDir := filepath.Clean(req.DataDir)
+	if !filepath.IsAbs(dataDir) || dataDir == string(filepath.Separator) {
+		return fmt.Errorf("data_dir must be an absolute, non-root path")
+	}
+	dbDir := filepath.Join(dataDir, "db")
 
 	// --- Stop the node so nothing is writing to the DB while we delete it ---
 	report("stopping", "stopping node container")
@@ -51,16 +57,17 @@ func ResetDBFastBootstrap(ctx context.Context, docker *DockerClient, req *models
 
 	// --- Delete the chain DB (config/keys untouched) ---
 	report("clearing", "deleting local chain DB")
-	if err := os.RemoveAll(dbDir); err != nil {
-		// Try to bring the node back up rather than leave it stopped.
-		_ = docker.StartContainer(ctx, req.ContainerName)
-		return fmt.Errorf("delete chain db: %w", err)
+	// Clear the directory's contents rather than removing the directory itself:
+	// db/ is often a mountpoint (separate disk), which RemoveAll can't remove.
+	// If clearing fails part-way the DB is already damaged, so do NOT restart
+	// the old container with its old args — report the failure instead.
+	if err := clearDir(dbDir); err != nil {
+		return fmt.Errorf("delete chain db (node left stopped): %w", err)
 	}
-	// Recreate an empty db/ owned by the container user so the validator can
+	// Ensure db/ exists and is owned by the container user so the validator can
 	// write into it (Docker would otherwise create it as root on start).
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		_ = docker.StartContainer(ctx, req.ContainerName)
-		return fmt.Errorf("recreate db dir: %w", err)
+		return fmt.Errorf("recreate db dir (node left stopped): %w", err)
 	}
 	if err := chownRecursive(dbDir, 999, 999); err != nil {
 		log.Printf("db-reset %s: chown warning: %v", req.ContainerName, err)
@@ -77,5 +84,23 @@ func ResetDBFastBootstrap(ctx context.Context, docker *DockerClient, req *models
 	}
 
 	report("done", "chain DB cleared — node re-bootstrapping from latest epoch")
+	return nil
+}
+
+// clearDir removes everything inside dir but keeps dir itself. A missing dir is
+// not an error.
+func clearDir(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
 	return nil
 }

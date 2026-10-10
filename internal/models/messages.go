@@ -16,6 +16,11 @@ type Message struct {
 // change is fully backward compatible in both directions.
 const CapabilityHTTPUpdate = "http-update"
 
+// CapabilityResetDB signals that the agent understands the node.reset-db
+// (fast reset) command, so the dashboard can tell the user to update an older
+// agent instead of firing a command that would be silently rejected.
+const CapabilityResetDB = "reset-db"
+
 // AgentInfo is sent by the agent on first connect.
 type AgentInfo struct {
 	Version      string   `json:"version"`

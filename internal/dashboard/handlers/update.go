@@ -1,15 +1,18 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard"
@@ -26,6 +29,54 @@ type UpdateHandler struct {
 	serverStore    *store.ServerStore
 	settingsStore  *store.SettingsStore
 	versionChecker *dashboard.VersionChecker
+
+	tokenMu        sync.Mutex
+	downloadTokens map[string]downloadToken
+}
+
+// downloadToken authorises one agent binary download. It is minted when the
+// update command is built and sent to the agent over its (authenticated)
+// WebSocket, so the unauthenticated HTTP endpoint is only usable by the agent
+// that was actually told to update — not by anyone who guesses a server_id.
+type downloadToken struct {
+	serverID string
+	expires  time.Time
+}
+
+const downloadTokenTTL = 10 * time.Minute
+
+// newDownloadToken mints a random single-use token bound to serverID.
+func (h *UpdateHandler) newDownloadToken(serverID string) string {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return ""
+	}
+	tok := hex.EncodeToString(buf)
+	now := time.Now()
+	h.tokenMu.Lock()
+	defer h.tokenMu.Unlock()
+	for k, v := range h.downloadTokens {
+		if now.After(v.expires) {
+			delete(h.downloadTokens, k)
+		}
+	}
+	h.downloadTokens[tok] = downloadToken{serverID: serverID, expires: now.Add(downloadTokenTTL)}
+	return tok
+}
+
+// consumeDownloadToken validates and removes a token (single use).
+func (h *UpdateHandler) consumeDownloadToken(tok, serverID string) bool {
+	if tok == "" {
+		return false
+	}
+	h.tokenMu.Lock()
+	defer h.tokenMu.Unlock()
+	t, ok := h.downloadTokens[tok]
+	if !ok {
+		return false
+	}
+	delete(h.downloadTokens, tok)
+	return t.serverID == serverID && time.Now().Before(t.expires)
 }
 
 // NewUpdateHandler creates a new UpdateHandler.
@@ -36,6 +87,7 @@ func NewUpdateHandler(hub *ws.Hub, updateStore *dashboard.UpdateStore, serverSto
 		serverStore:    serverStore,
 		settingsStore:  settingsStore,
 		versionChecker: vc,
+		downloadTokens: make(map[string]downloadToken),
 	}
 }
 
@@ -51,7 +103,11 @@ func (h *UpdateHandler) buildAgentUpdatePayload(serverID string, binaryData []by
 		"size":     info.Size,
 	}
 	if h.hub.AgentHasCapability(serverID, models.CapabilityHTTPUpdate) {
-		payload["download_path"] = fmt.Sprintf("/api/agent/binary/%s?version=%s", serverID, url.QueryEscape(info.Version))
+		if tok := h.newDownloadToken(serverID); tok != "" {
+			payload["download_path"] = fmt.Sprintf("/api/agent/binary/%s?version=%s&token=%s", serverID, url.QueryEscape(info.Version), tok)
+		} else {
+			payload["data"] = base64.StdEncoding.EncodeToString(binaryData)
+		}
 	} else {
 		payload["data"] = base64.StdEncoding.EncodeToString(binaryData)
 	}
@@ -123,19 +179,24 @@ func (h *UpdateHandler) HandleListBinaries(w http.ResponseWriter, _ *http.Reques
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// HandleAgentBinary handles GET /api/agent/binary/{server_id}?version=...
+// HandleAgentBinary handles GET /api/agent/binary/{server_id}?version=...&token=...
 // Called by the AGENT (not the browser) to fetch its update binary over a
 // separate HTTP request instead of receiving it base64-encoded inside the
 // WebSocket command — this keeps the ~15 MB transfer off the WS connection so it
-// can't hold the write lock, stall pongs and get the agent dropped. Auth is by
-// server_id existence (the same model the WebSocket upgrade uses); the agent
-// binary is a public release artifact anyway. Deliberately NOT behind the
-// browser-session auth middleware, since the agent has no browser session.
+// can't hold the write lock, stall pongs and get the agent dropped. Deliberately
+// NOT behind the browser-session auth middleware (the agent has no browser
+// session); instead the request must carry the single-use token the dashboard
+// sent over the agent's WebSocket. Every failure returns the same generic 404
+// so server IDs can't be probed.
 func (h *UpdateHandler) HandleAgentBinary(w http.ResponseWriter, r *http.Request) {
 	serverID := r.PathValue("server_id")
+	if !h.consumeDownloadToken(r.URL.Query().Get("token"), serverID) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	srv, err := h.serverStore.GetByID(serverID)
 	if err != nil {
-		http.Error(w, "unknown server", http.StatusNotFound)
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
@@ -149,9 +210,14 @@ func (h *UpdateHandler) HandleAgentBinary(w http.ResponseWriter, r *http.Request
 		binaryData, info, err = h.updateStore.GetBinary(osName, arch)
 	}
 	if err != nil {
-		http.Error(w, fmt.Sprintf("no binary for %s/%s: %v", osName, arch, err), http.StatusNotFound)
+		log.Printf("agent binary download for %s (%s/%s): %v", serverID, osName, arch, err)
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+
+	// The server-wide WriteTimeout (30s) is too short for ~15 MB over a slow
+	// link; extend it for this response only.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Minute))
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("X-Agent-Version", info.Version)
@@ -211,7 +277,7 @@ func (h *UpdateHandler) HandleUpdateAgent(w http.ResponseWriter, r *http.Request
 		Timestamp: time.Now().Unix(),
 	}
 
-	result, err := h.hub.SendCommand(serverID, msg, 120*time.Second)
+	result, err := h.hub.SendCommand(serverID, msg, 10*time.Minute)
 	if err != nil {
 		writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": fmt.Sprintf("update failed: %v", err)})
 		return
@@ -337,7 +403,7 @@ func (h *UpdateHandler) HandleUpdateAll(w http.ResponseWriter, r *http.Request) 
 			Timestamp: time.Now().Unix(),
 		}
 
-		cmdResult, err := h.hub.SendCommand(srv.ID, msg, 120*time.Second)
+		cmdResult, err := h.hub.SendCommand(srv.ID, msg, 10*time.Minute)
 		if err != nil {
 			results = append(results, updateResult{
 				ServerID: srv.ID, Name: srv.Name,

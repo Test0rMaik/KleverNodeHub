@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-10-10 (fork: upstream sync to v0.3.87)
+- **Synced upstream fixes up to v0.3.87**: fast-reset of a node's chain DB, tolerance for transient missed pings, and HTTP-based agent updates with adaptive discovery interval (stops agents being dropped on overloaded hosts). The fork already carried upstream's #64 fix.
+- **Fork hardening on top of the synced code** (found by Opus code/security audits): the agent binary endpoint `GET /api/agent/binary/{server_id}` now requires a single-use, server-bound token delivered over the agent's WebSocket (generic 404 on every failure, no server-ID probing); the response gets its own 10 min write deadline and `agent.update` a 10 min agent-side timeout (the 30s server limit and 60s command default cut off slow links); agent download restricted to the binary path, no redirects, 100 MB cap; `http-update` only advertised when the update source is configured; fast reset validates `data_dir`, clears the contents of `db/` (works when it is a mountpoint/symlink) and no longer restarts the old container on a half-wiped DB; dashboard returns 409 "update the agent first" for agents without the new `reset-db` capability; ping loop exits immediately on a closed connection.
+
 ### 2026-06-20 (agent update)
 - **Fix: "Agent Update" sidebar link now opens the dialog**: clicking it did nothing — the link just set `#agent-update` in the URL with nothing wired to it. The overview now opens the Agent Update dialog on that hash (from any page), and clears the hash on close so it re-triggers.
 - **Fix: fork agent versions detected as outdated**: the agent version check only compared `X.Y.Z` and ignored the `-knh.<n>` suffix, so an agent on `v0.3.82-knh.2` looked identical to a `v0.3.82-knh.3` dashboard and was never flagged for update. Version comparison (banner + update dialog) now orders by the `knh` number on equal `X.Y.Z`, so older fork agents are correctly shown as outdated and can be updated from your custom source.

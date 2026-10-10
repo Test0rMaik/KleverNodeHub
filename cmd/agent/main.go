@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -123,6 +125,9 @@ func main() {
 	// the same way. Falls back to the inline payload if this can't be set up.
 	if tlsConfig, err := ag.TLSConfig(); err == nil {
 		executor.SetUpdateSource(config.DashboardURL, tlsConfig)
+		ag.EnableHTTPUpdate()
+	} else {
+		log.Printf("HTTP update source unavailable, using inline updates: %v", err)
 	}
 
 	// --- Metrics collector ---
@@ -314,6 +319,10 @@ func runAgentLoop(ctx context.Context, wsURL string, ag *agent.Agent, executor *
 				err := conn.Ping(pingCtx)
 				cancel()
 				if err != nil {
+					if errors.Is(err, net.ErrClosed) {
+						log.Printf("ping failed: connection closed")
+						return
+					}
 					pingFailures++
 					if pingFailures >= maxPingFailures {
 						log.Printf("ping failed %d× in a row: %v — closing connection", pingFailures, err)

@@ -282,6 +282,12 @@ func (h *DockerHandler) HandleResetDB(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent offline"})
 		return
 	}
+	// Older agents reject node.reset-db at the whitelist and never stream
+	// progress, which would leave the UI hanging — ask for an update instead.
+	if !h.hub.AgentHasCapability(node.ServerID, models.CapabilityResetDB) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "this agent version does not support fast reset — update the agent first"})
+		return
+	}
 
 	msg := &models.Message{
 		ID:     fmt.Sprintf("cmd-reset-db-%d", time.Now().UnixNano()),

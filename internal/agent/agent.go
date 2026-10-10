@@ -38,6 +38,8 @@ type Config struct {
 type Agent struct {
 	config    *Config
 	configDir string
+
+	httpUpdate bool // update binary can be fetched over HTTP
 }
 
 // New creates a new Agent with the given config directory.
@@ -219,14 +221,22 @@ func (a *Agent) Register(dashboardURL, token string) error {
 // BuildAgentInfo creates the agent.info payload.
 func (a *Agent) BuildAgentInfo(publicIP string) *models.AgentInfo {
 	hostname, _ := os.Hostname()
+	caps := []string{models.CapabilityResetDB}
+	if a.httpUpdate {
+		caps = append(caps, models.CapabilityHTTPUpdate)
+	}
 	return &models.AgentInfo{
 		Version:      version.Version,
 		OS:           runtime.GOOS + "/" + runtime.GOARCH,
 		Hostname:     hostname,
 		PublicIP:     publicIP,
-		Capabilities: []string{models.CapabilityHTTPUpdate},
+		Capabilities: caps,
 	}
 }
+
+// EnableHTTPUpdate marks the agent as able to download update binaries over
+// HTTP; only call it once the executor's update source is configured.
+func (a *Agent) EnableHTTPUpdate() { a.httpUpdate = true }
 
 // BuildInfoMessage creates a complete agent.info message.
 func (a *Agent) BuildInfoMessage(publicIP string) *models.Message {
