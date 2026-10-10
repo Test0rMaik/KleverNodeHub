@@ -16,6 +16,13 @@ func TestIsNewer(t *testing.T) {
 		{"v0.1.0", "dev", true},
 		{"", "dev", false},
 		{"v0.1.0", "", true},
+		// Fork releases: same X.Y.Z, higher -knh.N revision is newer.
+		{"v0.3.87-knh.2", "v0.3.87-knh.1", true},
+		{"v0.3.87-knh.1", "v0.3.87-knh.2", false},
+		{"v0.3.87-knh.10", "v0.3.87-knh.9", true},
+		{"v0.3.88-knh.1", "v0.3.87-knh.5", true},
+		{"v0.3.87-knh.1", "v0.3.87", true},
+		{"v0.3.87-knh.1", "v0.3.87-knh.1", false},
 	}
 	for _, tt := range tests {
 		got := isNewer(tt.remote, tt.local)

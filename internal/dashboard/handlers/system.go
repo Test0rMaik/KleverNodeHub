@@ -58,6 +58,9 @@ func (h *SystemHandler) HandleVersionInfo(w http.ResponseWriter, _ *http.Request
 	writeJSON(w, http.StatusOK, result)
 }
 
+// dockerSelfUpdateEnabled gates upstream's Docker-mode self-update (see above).
+const dockerSelfUpdateEnabled = false
+
 // HandleSelfUpdate downloads and applies a self-update.
 // POST /api/system/update
 func (h *SystemHandler) HandleSelfUpdate(w http.ResponseWriter, _ *http.Request) {
@@ -82,6 +85,18 @@ func (h *SystemHandler) HandleSelfUpdate(w http.ResponseWriter, _ *http.Request)
 	}
 
 	// Docker mode: pull new image and recreate container (no binary needed)
+	// The fork publishes no Docker images (only GitHub release binaries), so a
+	// Docker self-update would pull a tag that doesn't exist or someone else's
+	// image. Keep upstream's implementation but disabled; flip the switch if the
+	// fork ever publishes images.
+	if isRunningInDocker() && !dockerSelfUpdateEnabled {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": false,
+			"message": "Docker self-update is not available in this fork (no published images) — rebuild the image from the fork and recreate the container",
+		})
+		return
+	}
+
 	if isRunningInDocker() {
 		// Single-flight: prevent two clicks from racing through the rename /
 		// create / helper-spawn sequence concurrently. Unlock happens in the

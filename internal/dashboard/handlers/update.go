@@ -6,11 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -544,9 +546,9 @@ func (h *UpdateHandler) HandleDownloadFromRelease(w http.ResponseWriter, r *http
 	}
 
 	// SSRF protection: only allow GitHub release downloads from our repo
-	const allowedPrefix = "https://github.com/CTJaeger/KleverNodeHub/releases/download/"
-	if !strings.HasPrefix(req.URL, allowedPrefix) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "URL must be a KleverNodeHub GitHub release asset"})
+	const allowedPrefix = dashboard.ReleaseDownloadPrefix
+	if !validReleaseURL(req.URL) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "URL must be a release asset of the KleverNodeHub fork"})
 		return
 	}
 
@@ -571,7 +573,7 @@ func (h *UpdateHandler) HandleDownloadFromRelease(w http.ResponseWriter, r *http
 	}
 
 	// Try to verify checksum if checksums file is available
-	// URL format: https://github.com/CTJaeger/KleverNodeHub/releases/download/v0.3.3/agent-linux-amd64
+	// URL format: https://github.com/Test0rMaik/KleverNodeHub/releases/download/v0.3.3/agent-linux-amd64
 	urlParts := strings.Split(req.URL, "/")
 	if len(urlParts) >= 2 {
 		tag := urlParts[len(urlParts)-2]
@@ -579,9 +581,13 @@ func (h *UpdateHandler) HandleDownloadFromRelease(w http.ResponseWriter, r *http
 		checksumURL := allowedPrefix + tag + "/checksums.txt"
 		actualHash := sha256hex(data)
 		if err := verifyAgentChecksum(client, checksumURL, filename, actualHash); err != nil {
-			// Checksum verification is best-effort — log but don't block
-			// (older releases may not have checksums file)
-			_ = err
+			// A missing checksums file (older releases) is tolerated; a real
+			// mismatch is not.
+			if !errors.Is(err, errChecksumUnavailable) {
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+				return
+			}
+			log.Printf("download-release: no checksum verification for %s: %v", filename, err)
 		}
 	}
 
@@ -666,7 +672,7 @@ func (h *UpdateHandler) HandleDownloadReleaseAuto(w http.ResponseWriter, r *http
 	}
 
 	// Download each needed binary
-	const allowedPrefix = "https://github.com/CTJaeger/KleverNodeHub/releases/download/"
+	const allowedPrefix = dashboard.ReleaseDownloadPrefix
 	client := &http.Client{Timeout: 5 * time.Minute}
 
 	type dlResult struct {
@@ -688,7 +694,7 @@ func (h *UpdateHandler) HandleDownloadReleaseAuto(w http.ResponseWriter, r *http
 		}
 
 		// SSRF protection
-		if !strings.HasPrefix(asset.BrowserDownloadURL, allowedPrefix) {
+		if !validReleaseURL(asset.BrowserDownloadURL) {
 			results = append(results, dlResult{OS: osName, Arch: arch, Success: false, Error: "invalid URL"})
 			continue
 		}
@@ -702,6 +708,11 @@ func (h *UpdateHandler) HandleDownloadReleaseAuto(w http.ResponseWriter, r *http
 		_ = resp.Body.Close()
 		if err != nil || resp.StatusCode != http.StatusOK {
 			results = append(results, dlResult{OS: osName, Arch: arch, Success: false, Error: fmt.Sprintf("download failed (%d)", resp.StatusCode)})
+			continue
+		}
+
+		if cerr := verifyAgentChecksum(client, allowedPrefix+targetRelease.TagName+"/checksums.txt", asset.Name, sha256hex(data)); cerr != nil && !errors.Is(cerr, errChecksumUnavailable) {
+			results = append(results, dlResult{OS: osName, Arch: arch, Success: false, Error: cerr.Error()})
 			continue
 		}
 
@@ -878,15 +889,36 @@ func sha256hex(data []byte) string {
 }
 
 // verifyAgentChecksum downloads the checksums file and verifies the binary hash.
+// errChecksumUnavailable marks "no checksum to compare against" (older releases
+// have no checksums.txt) as opposed to a real mismatch, which must hard-fail.
+var errChecksumUnavailable = errors.New("checksum unavailable")
+
+// validReleaseURL reports whether u is exactly an asset download URL of this
+// fork's releases: right host/owner/repo, no query/fragment, no dot segments.
+func validReleaseURL(u string) bool {
+	if !strings.HasPrefix(u, dashboard.ReleaseDownloadPrefix) {
+		return false
+	}
+	pu, err := url.Parse(u)
+	if err != nil || pu.Host != "github.com" || pu.RawQuery != "" || pu.Fragment != "" {
+		return false
+	}
+	if path.Clean(pu.Path) != pu.Path {
+		return false
+	}
+	rest := strings.TrimPrefix(u, dashboard.ReleaseDownloadPrefix)
+	return strings.Count(rest, "/") == 1 // <tag>/<asset>
+}
+
 func verifyAgentChecksum(client *http.Client, checksumURL, filename, actualHash string) error {
 	resp, err := client.Get(checksumURL)
 	if err != nil {
-		return fmt.Errorf("download checksums: %w", err)
+		return fmt.Errorf("%w: download: %v", errChecksumUnavailable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("checksums returned %d", resp.StatusCode)
+		return fmt.Errorf("%w: HTTP %d", errChecksumUnavailable, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -904,5 +936,5 @@ func verifyAgentChecksum(client *http.Client, checksumURL, filename, actualHash 
 		}
 	}
 
-	return fmt.Errorf("file %s not found in checksums", filename)
+	return fmt.Errorf("%w: %s not listed", errChecksumUnavailable, filename)
 }

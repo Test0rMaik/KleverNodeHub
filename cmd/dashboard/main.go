@@ -301,7 +301,7 @@ func main() {
 	regressionDetector := alerting.NewRegressionDetector(versionHistoryStore, metricsStore, nodeStore, alertStore, notifyManager)
 	regressionDetector.Start()
 	updateStore := dashboard.NewUpdateStore(*dataDir)
-	versionChecker := dashboard.NewVersionChecker("CTJaeger", "KleverNodeHub")
+	versionChecker := dashboard.NewVersionChecker(dashboard.ReleaseRepoOwner, dashboard.ReleaseRepoName)
 	versionChecker.Start()
 	updateHandler := handlers.NewUpdateHandler(hub, updateStore, serverStore, settingsStore, versionChecker)
 	settingsHandler := handlers.NewSettingsHandler(settingsStore)
@@ -359,6 +359,12 @@ func main() {
 
 	// WebSocket endpoint for agents (authenticated via mTLS cert, not JWT)
 	wsHandler := ws.NewAgentHandler(hub, serverStore, nodeStore, metricsStore, versionHistoryStore, geoResolver)
+	// Operator switch: set the setting require_signed_agent_auth=true to refuse
+	// unsigned (legacy) agent connections for all servers once every agent is updated.
+	wsHandler.SetRequireSignedAuth(func() bool {
+		v, _ := settingsStore.Get("require_signed_agent_auth")
+		return v == "true"
+	})
 	mux.HandleFunc("GET /ws/agent", wsHandler.HandleUpgrade)
 
 	// WebSocket endpoint for browser clients (authenticated via JWT cookie)

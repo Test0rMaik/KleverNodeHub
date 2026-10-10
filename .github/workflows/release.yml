@@ -3,11 +3,12 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      # Fork releases only (v<upstream-base>-knh.<n>). A plain upstream-style tag
+      # must never produce a release, or auto-update would offer upstream code.
+      - 'v*-knh.*'
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 env:
   GO_VERSION: '1.26'
@@ -92,6 +93,8 @@ jobs:
   docker:
     name: Docker
     needs: [test]
+    # Docker Hub repos belong to upstream; the fork ships GitHub release binaries only.
+    if: github.repository == 'CTJaeger/KleverNodeHub'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -146,6 +149,8 @@ jobs:
     name: Create Release
     needs: [build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
 

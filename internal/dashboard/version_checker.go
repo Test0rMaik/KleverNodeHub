@@ -13,6 +13,17 @@ import (
 	"github.com/CTJaeger/KleverNodeHub/internal/version"
 )
 
+// This fork publishes its own releases. Update checks, self-update and agent
+// binary downloads all use this repo — never upstream — so an "Update Now"
+// can never replace the fork with an upstream build that lacks fork features.
+const (
+	ReleaseRepoOwner = "Test0rMaik"
+	ReleaseRepoName  = "KleverNodeHub"
+	// ReleaseDownloadPrefix is the only URL prefix agent/dashboard binaries may
+	// be downloaded from (SSRF guard).
+	ReleaseDownloadPrefix = "https://github.com/" + ReleaseRepoOwner + "/" + ReleaseRepoName + "/releases/download/"
+)
+
 // ReleaseInfo holds information about a GitHub release.
 type ReleaseInfo struct {
 	TagName    string         `json:"tag_name"`
@@ -185,6 +196,18 @@ func isNewer(remote, local string) bool {
 	return compareVersions(remote, local) > 0
 }
 
+// forkRevision extracts N from a fork suffix like "0.3.87-knh.3" (0 if absent).
+// Fork releases share the upstream X.Y.Z, so the revision is the tie-breaker.
+func forkRevision(v string) int {
+	_, suffix, ok := strings.Cut(v, "-knh.")
+	if !ok {
+		return 0
+	}
+	var n int
+	_, _ = fmt.Sscanf(suffix, "%d", &n)
+	return n
+}
+
 // compareVersions compares two semver strings (without 'v' prefix).
 // Returns 1 if a > b, -1 if a < b, 0 if equal.
 func compareVersions(a, b string) int {
@@ -205,6 +228,13 @@ func compareVersions(a, b string) int {
 		if aNum < bNum {
 			return -1
 		}
+	}
+	// Same X.Y.Z: a higher fork revision (-knh.N) is newer.
+	if ra, rb := forkRevision(a), forkRevision(b); ra != rb {
+		if ra > rb {
+			return 1
+		}
+		return -1
 	}
 	return 0
 }
