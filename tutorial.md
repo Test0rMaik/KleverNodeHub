@@ -98,7 +98,7 @@ The dashboard runs on **one** of your servers (or a dedicated management server)
 #### Option A: One-liner Install Script
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/CTJaeger/KleverNodeHub/main/scripts/install-agent.sh \
+curl -sSL https://raw.githubusercontent.com/Test0rMaik/KleverNodeHub/main/scripts/install-agent.sh \
   | sudo bash -s -- --token <TOKEN> --dashboard https://<DASHBOARD_IP>:9443
 ```
 
@@ -119,19 +119,19 @@ The `--domain` flag is optional. It's only required if you want to use **Passkey
 
 ```bash
 # Download the latest release
-wget https://github.com/CTJaeger/KleverNodeHub/releases/latest/download/dashboard-linux-amd64
+wget https://github.com/Test0rMaik/KleverNodeHub/releases/latest/download/klever-node-hub-linux-amd64
 
 # Make executable
-chmod +x dashboard-linux-amd64
+chmod +x klever-node-hub-linux-amd64
 
 # Run
-./dashboard-linux-amd64 --domain your-server.example.com
+./klever-node-hub-linux-amd64 --domain your-server.example.com
 ```
 
 #### Option D: Build from Source
 
 ```bash
-git clone https://github.com/CTJaeger/KleverNodeHub.git
+git clone https://github.com/Test0rMaik/KleverNodeHub.git
 cd KleverNodeHub
 make build-linux
 scp bin/dashboard-linux-amd64 user@your-server:/opt/klever/klever-node-hub
@@ -174,7 +174,7 @@ The token is **one-time use** and expires after **1 hour**.
 SSH into your node server and paste the copied command:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/CTJaeger/KleverNodeHub/main/scripts/install-agent.sh \
+curl -sSL https://raw.githubusercontent.com/Test0rMaik/KleverNodeHub/main/scripts/install-agent.sh \
   | sudo bash -s -- --token <YOUR_TOKEN> --dashboard https://<DASHBOARD_IP>:9443
 ```
 
@@ -200,9 +200,9 @@ docker run -d \
 **Option C: Manual binary**
 
 ```bash
-wget https://github.com/CTJaeger/KleverNodeHub/releases/latest/download/agent-linux-amd64
-chmod +x agent-linux-amd64
-./agent-linux-amd64 --dashboard-url https://<DASHBOARD_IP>:9443 --register-token <YOUR_TOKEN>
+wget https://github.com/Test0rMaik/KleverNodeHub/releases/latest/download/klever-agent-linux-amd64
+chmod +x klever-agent-linux-amd64
+./klever-agent-linux-amd64 --dashboard-url https://<DASHBOARD_IP>:9443 --register-token <YOUR_TOKEN>
 ```
 
 #### Agent CLI Flags
@@ -815,7 +815,7 @@ The dashboard sets standard security headers:
 
 The code is open source under the MIT license. Security follows [Kerckhoffs's principle](https://en.wikipedia.org/wiki/Kerckhoffs%27s_principle) — knowing the source code does not help an attacker without the encryption keys. No security through obscurity.
 
-For security vulnerabilities, use [GitHub's private vulnerability reporting](https://github.com/CTJaeger/KleverNodeHub/security).
+For security vulnerabilities, use [GitHub's private vulnerability reporting](https://github.com/Test0rMaik/KleverNodeHub/security).
 
 ---
 
@@ -869,9 +869,9 @@ The agent is extremely lightweight — typically under 20 MB memory and negligib
 
 ## Links
 
-- **GitHub:** [github.com/CTJaeger/KleverNodeHub](https://github.com/CTJaeger/KleverNodeHub)
+- **GitHub:** [github.com/Test0rMaik/KleverNodeHub](https://github.com/Test0rMaik/KleverNodeHub)
 - **Docker Hub:** [hub.docker.com/r/ctjaeger/klever-node-hub](https://hub.docker.com/r/ctjaeger/klever-node-hub)
-- **Issues & Feature Requests:** [GitHub Issues](https://github.com/CTJaeger/KleverNodeHub/issues)
+- **Issues & Feature Requests:** [GitHub Issues](https://github.com/Test0rMaik/KleverNodeHub/issues)
 - **License:** MIT
 
 ---

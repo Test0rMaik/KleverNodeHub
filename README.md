@@ -1,6 +1,6 @@
 # Klever Node Hub
 
-[![CI](https://github.com/CTJaeger/KleverNodeHub/actions/workflows/ci.yml/badge.svg)](https://github.com/CTJaeger/KleverNodeHub/actions/workflows/ci.yml)
+[![CI](https://github.com/Test0rMaik/KleverNodeHub/actions/workflows/ci.yml/badge.svg)](https://github.com/Test0rMaik/KleverNodeHub/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Docker Hub](https://img.shields.io/docker/v/ctjaeger/klever-node-hub?label=Docker&logo=docker)](https://hub.docker.com/r/ctjaeger/klever-node-hub)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -36,6 +36,18 @@ A dedicated **Validators** page tracks your managed validators on-chain by BLS k
 - **Per-epoch election attribution** — correct election counts with deferred-election handling at epoch boundaries
 - **Monthly election history chart** — elections won per month over time
 - **Validator alerts** — dedicated alert rules for validator-specific events (jailed, missed threshold, etc.)
+
+### Backup & Migration (move the hub to a new server)
+Export the whole hub as **one passphrase-encrypted file** and restore it on another server — no re-registering agents, no re-entering node/BLS configuration, no lost election stats:
+- **What's included** — all settings, registered servers and nodes, alert rules and notification channels, login (password/passkeys), the **validator election history**, and the certificate authority so existing agents keep trusting the new hub. Metric history is optional. Validator keys stay on your node hosts.
+- **Export** — Settings → **Backup** → *Download encrypted backup* (or `klever-node-hub --export-backup file.knhbak`, safe while the hub runs).
+- **Restore** — on the new server, *before first start*, as the service user and with the service's `--data-dir`: `klever-node-hub --import-backup file.knhbak --data-dir <dir>` (Docker: `docker run --rm -it -v <volume>:/root/.klever-node-hub -v $PWD/file.knhbak:/b.knhbak <image> --import-backup /b.knhbak`), then start. It refuses while a dashboard is running on the listen address. Existing data is never overwritten unless `--force` (it is moved to `.bak-<time>`).
+- **Agents** — they reconnect on their own as long as the new hub answers at the same address (point your DNS name / IP at the new server). Passkeys need an unchanged domain; the password always works.
+- AES-256-GCM, key derived with Argon2id; truncated, tampered or wrong-passphrase files are rejected.
+
+### Fork Release Channel & Signed Agent Auth
+- **Update notifications follow this fork** — the update banner, dashboard self-update and agent updates use this repo's GitHub releases (built by CI on `v*-knh.*` tags), never upstream builds.
+- **Signed agent connections** — agents prove ownership of their private key on every WebSocket connect (replay-protected); a guessed server ID is no longer enough to impersonate an agent. Set `require_signed_agent_auth=true` once all agents are updated.
 
 ### Reliability Improvements
 - **SQLite contention fixes** — `busy_timeout` + WAL mode + batched metric purges eliminate `SQLITE_BUSY` crashes and intermittent "heartbeat stalled" agent offline alerts under DB load
@@ -176,7 +188,7 @@ Build from source and run on one of your servers:
 
 ```bash
 # Clone and build
-git clone https://github.com/CTJaeger/KleverNodeHub.git
+git clone https://github.com/Test0rMaik/KleverNodeHub.git
 cd KleverNodeHub
 make build-linux
 
@@ -232,7 +244,7 @@ Each server that runs Klever nodes needs a lightweight agent. The agent connects
 SSH into your node server and paste the copied command. It looks like this:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/CTJaeger/KleverNodeHub/main/scripts/install-agent.sh \
+curl -sSL https://raw.githubusercontent.com/Test0rMaik/KleverNodeHub/main/scripts/install-agent.sh \
   | sudo bash -s -- --token <YOUR_TOKEN> --dashboard https://<DASHBOARD_IP>:9443
 ```
 
@@ -259,7 +271,7 @@ docker run -d \
 
 ```bash
 # Download from GitHub Releases
-wget https://github.com/CTJaeger/KleverNodeHub/releases/latest/download/klever-agent-linux-amd64
+wget https://github.com/Test0rMaik/KleverNodeHub/releases/latest/download/klever-agent-linux-amd64
 
 # Make executable and register
 chmod +x klever-agent-linux-amd64
@@ -400,6 +412,6 @@ MIT
 
 Contributions are welcome! Please read the [Contributing Guide](CONTRIBUTING.md) before submitting a pull request.
 
-For security vulnerabilities, please use [GitHub's private vulnerability reporting](https://github.com/CTJaeger/KleverNodeHub/security) instead of opening a public issue. See [SECURITY.md](SECURITY.md) for details.
+For security vulnerabilities, please use [GitHub's private vulnerability reporting](https://github.com/Test0rMaik/KleverNodeHub/security) instead of opening a public issue. See [SECURITY.md](SECURITY.md) for details.
 
 This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).

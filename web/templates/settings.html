@@ -42,6 +42,7 @@
                     <button class="tab" onclick="switchTab('security')">Security</button>
                     <button class="tab" onclick="switchTab('agents')">Agents</button>
                     <button class="tab" onclick="switchTab('klever')">Klever</button>
+                    <button class="tab" onclick="switchTab('backup')">Backup</button>
                 </div>
 
                 <!-- General -->
@@ -297,6 +298,48 @@
                         <button class="btn btn-secondary btn-sm" onclick="resetSection('klever')">Reset to Defaults</button>
                     </div>
                 </div>
+
+                <!-- Backup & Migration -->
+                <div id="tab-backup" class="tab-content">
+                    <div class="settings-section">
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Export hub backup</div>
+                                <div class="setting-desc">One encrypted file with everything needed to move this hub to another server: all settings, registered servers and nodes (incl. BLS/node configuration), alert rules, notification channels, login (password / passkeys) and the <strong>validator election history</strong>, plus the certificate authority so your agents keep trusting the new hub. Validator keys stay on your node hosts and are not part of the backup, and neither are downloaded agent binaries (re-download them from the releases after the move; if you set an <em>Agent update URL</em>, check it still points to a live host). The file contains secrets &mdash; keep it safe and remember the passphrase (it cannot be recovered).</div>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <div><div class="setting-label">Current admin password</div><div class="setting-desc">Re-enter your login password to authorise the export (leave empty if you sign in without a password).</div></div>
+                            <input class="form-input" id="backup-curpass" type="password" autocomplete="current-password">
+                        </div>
+                        <div class="setting-row">
+                            <div><div class="setting-label">Passphrase</div><div class="setting-desc">At least 12 characters. Needed to restore.</div></div>
+                            <input class="form-input" id="backup-pass" type="password" autocomplete="new-password">
+                        </div>
+                        <div class="setting-row">
+                            <div><div class="setting-label">Repeat passphrase</div></div>
+                            <input class="form-input" id="backup-pass2" type="password" autocomplete="new-password">
+                        </div>
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Include metric history</div>
+                                <div class="setting-desc">CPU/memory/node metric charts. Can make the file large; leave off if you only need settings and election history.</div>
+                            </div>
+                            <input type="checkbox" id="backup-metrics">
+                        </div>
+                        <div class="section-actions">
+                            <button class="btn btn-primary btn-sm" id="backup-btn" onclick="exportBackup()">Download encrypted backup</button>
+                        </div>
+                    </div>
+                    <div class="settings-section" style="margin-top:16px;">
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Restore on the new server</div>
+                                <div class="setting-desc">Install the same dashboard on the new server, but <strong>do not start it yet</strong>. Copy the backup file over and run it <em>as the user the service runs as</em>, with the same data directory the service uses (<code>--data-dir</code>; default <code>~/.klever-node-hub</code> of that user):<br><code>klever-node-hub --import-backup /path/to/backup.knhbak --data-dir /path/to/data</code><br>With Docker: <code>docker run --rm -it -v klever-data:/root/.klever-node-hub -v $PWD/backup.knhbak:/b.knhbak &lt;image&gt; --import-backup /b.knhbak</code> (the container must not be running). Then start the dashboard. You will have to log in again once. Log in with your existing credentials. Agents reconnect automatically if the new hub is reachable at the same address (point your DNS name / IP at the new server). Passkeys only work if the domain <em>and port</em> are unchanged; otherwise use your password. The old hub can be shut down afterwards.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
             </div><!-- /page-body -->
         </main>
@@ -317,6 +360,49 @@
             agents: ['heartbeat_timeout_sec', 'agent_discovery_interval_sec', 'agent_update_url', 'agent_update_version'],
             klever: ['klever_api_url', 'indexer_node_url', 'indexer_es_url', 'indexer_es_user', 'indexer_es_pass']
         };
+
+
+        async function exportBackup() {
+            const pass = document.getElementById('backup-pass').value;
+            const pass2 = document.getElementById('backup-pass2').value;
+            const btn = document.getElementById('backup-btn');
+            if (pass.length < 12) { showStatus('Passphrase must be at least 12 characters', true); return; }
+            if (pass !== pass2) { showStatus('Passphrases do not match', true); return; }
+            btn.disabled = true;
+            btn.textContent = 'Creating backup...';
+            try {
+                const resp = await API.post('/api/system/backup/export', {
+                    passphrase: pass,
+                    current_password: document.getElementById('backup-curpass').value,
+                    include_metrics: document.getElementById('backup-metrics').checked
+                });
+                if (!resp) return;
+                if (!resp.ok) {
+                    let msg = 'Backup failed';
+                    try { msg = (await resp.json()).error || msg; } catch (e) {}
+                    showStatus(msg, true);
+                    return;
+                }
+                const blob = await resp.blob();
+                const m = /filename="([^"]+)"/.exec(resp.headers.get('Content-Disposition') || '');
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = m ? m[1] : 'klever-node-hub-backup.knhbak';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+                document.getElementById('backup-pass').value = '';
+                document.getElementById('backup-pass2').value = '';
+                document.getElementById('backup-curpass').value = '';
+                showStatus('Backup downloaded');
+            } catch (e) {
+                showStatus('Backup failed: ' + e.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Download encrypted backup';
+            }
+        }
 
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');

@@ -17,8 +17,9 @@ import (
 
 // DB wraps the SQLite database connection with encryption support.
 type DB struct {
-	db *sql.DB
-	mu sync.RWMutex // Serialize writes (SQLite limitation)
+	db   *sql.DB
+	mu   sync.RWMutex // Serialize writes (SQLite limitation)
+	path string       // file path, used to open independent connections for backups
 }
 
 // Open opens or creates a SQLite database at the given path.
@@ -57,7 +58,7 @@ func Open(dbPath string) (*DB, error) {
 	sqlDB.SetMaxIdleConns(1)
 	sqlDB.SetConnMaxLifetime(0)
 
-	store := &DB{db: sqlDB}
+	store := &DB{db: sqlDB, path: dbPath}
 
 	if err := store.migrate(); err != nil {
 		_ = sqlDB.Close()

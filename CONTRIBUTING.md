@@ -108,7 +108,7 @@ This project maintains a minimal dependency footprint for security reasons. **Do
 
 ## Reporting Bugs
 
-Use the [bug report template](https://github.com/CTJaeger/KleverNodeHub/issues/new?template=bug_report.md) to file issues. Include:
+Use the [bug report template](https://github.com/Test0rMaik/KleverNodeHub/issues/new?template=bug_report.md) to file issues. Include:
 
 - Go version and OS
 - Steps to reproduce
@@ -117,7 +117,7 @@ Use the [bug report template](https://github.com/CTJaeger/KleverNodeHub/issues/n
 
 ## Requesting Features
 
-Use the [feature request template](https://github.com/CTJaeger/KleverNodeHub/issues/new?template=feature_request.md). Describe:
+Use the [feature request template](https://github.com/Test0rMaik/KleverNodeHub/issues/new?template=feature_request.md). Describe:
 
 - The problem you're trying to solve
 - Your proposed solution

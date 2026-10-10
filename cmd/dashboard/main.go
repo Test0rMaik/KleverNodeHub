@@ -40,6 +40,11 @@ func main() {
 	domain := flag.String("domain", "localhost", "Domain for WebAuthn RP ID and TLS (e.g. localhost, myserver.local, node.example.com)")
 	dataDir := flag.String("data-dir", defaultDataDir(), "Data directory for DB, certs, config")
 	resetRecoveryCodes := flag.Bool("reset-recovery-codes", false, "Generate new recovery codes and exit")
+	exportBackup := flag.String("export-backup", "", "Write an encrypted backup (database + CA) to this file and exit")
+	importBackup := flag.String("import-backup", "", "Restore an encrypted backup into --data-dir and exit (dashboard must be stopped)")
+	backupPassFile := flag.String("backup-passphrase-file", "", "File containing the backup passphrase (else $KNH_BACKUP_PASSPHRASE, else prompt)")
+	backupMetrics := flag.Bool("backup-include-metrics", false, "Include metric history in --export-backup (can be large)")
+	backupForce := flag.Bool("force", false, "With --import-backup: move an existing database/CA aside (to .bak-<time>) instead of refusing")
 	// Internal flags used by the Docker self-update flow. The orchestrator container
 	// spawns a sidecar that re-execs this binary with these flags to finish the
 	// container swap after the orchestrator has stopped itself.
@@ -61,6 +66,20 @@ func main() {
 	// self-update attempts. Best-effort; never blocks startup.
 	handlers.SweepStaleFinalizeHelpers()
 
+	// --- Backup / restore (migrate the hub to another server) ---
+	if *importBackup != "" {
+		if err := runImportBackup(*dataDir, *importBackup, *backupPassFile, *addr, *backupForce); err != nil {
+			log.Fatalf("import backup: %v", err)
+		}
+		return
+	}
+	if *exportBackup != "" {
+		if err := runExportBackup(*dataDir, *exportBackup, *backupPassFile, *backupMetrics); err != nil {
+			log.Fatalf("export backup: %v", err)
+		}
+		return
+	}
+
 	// Ensure data directory exists
 	if err := os.MkdirAll(*dataDir, 0700); err != nil {
 		log.Fatalf("create data dir: %v", err)
@@ -73,6 +92,7 @@ func main() {
 	}
 
 	log.Printf("data directory: %s", *dataDir)
+	cleanupBackupStaging(*dataDir)
 
 	// --- Database ---
 	dbPath := filepath.Join(*dataDir, "dashboard.db")
@@ -305,6 +325,7 @@ func main() {
 	versionChecker.Start()
 	updateHandler := handlers.NewUpdateHandler(hub, updateStore, serverStore, settingsStore, versionChecker)
 	settingsHandler := handlers.NewSettingsHandler(settingsStore)
+	backupHandler := handlers.NewBackupHandler(db, caDir, passwordMgr, loginLimiter)
 	systemHandler := handlers.NewSystemHandler(versionChecker)
 	tokenManager := dashboard.NewTokenManager()
 	regHandler := handlers.NewRegistrationHandler(tokenManager, serverStore, ca)
@@ -458,6 +479,7 @@ func main() {
 	mux.Handle("POST /api/agent/download-release", authMw(http.HandlerFunc(updateHandler.HandleDownloadFromRelease)))
 	mux.Handle("POST /api/agent/download-release-auto", authMw(http.HandlerFunc(updateHandler.HandleDownloadReleaseAuto)))
 	mux.Handle("POST /api/agent/download-custom", authMw(http.HandlerFunc(updateHandler.HandleDownloadCustom)))
+	mux.Handle("POST /api/system/backup/export", authMw(http.HandlerFunc(backupHandler.HandleExport)))
 	mux.Handle("GET /api/settings", authMw(http.HandlerFunc(settingsHandler.HandleGetAll)))
 	mux.Handle("PUT /api/settings", authMw(http.HandlerFunc(settingsHandler.HandleUpdate)))
 	mux.Handle("GET /api/settings/{key}", authMw(http.HandlerFunc(settingsHandler.HandleGetSingle)))
@@ -594,6 +616,13 @@ func loadOrCreateCA(caDir string, encKey []byte) (*crypto.CA, error) {
 	if err == nil {
 		log.Println("loaded existing CA")
 		return ca, nil
+	}
+
+	// A CA that exists on disk but cannot be loaded (wrong encryption key, e.g.
+	// after a half-finished restore) must NOT be replaced: that would orphan
+	// every registered agent for good. Fail loudly instead.
+	if _, statErr := os.Stat(filepath.Join(caDir, "ca.key.enc")); statErr == nil {
+		return nil, fmt.Errorf("existing CA in %s cannot be loaded (%v) — refusing to overwrite it; restore the matching dashboard.db/encryption key or move the ca/ directory away deliberately", caDir, err)
 	}
 
 	// Create new CA
