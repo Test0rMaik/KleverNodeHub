@@ -23,6 +23,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true # always the newest 1.26.x patch (stdlib security fixes)
           cache: true
 
       - name: Run tests
@@ -44,6 +45,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true # always the newest 1.26.x patch (stdlib security fixes)
           cache: true
 
       - name: Install goimports
@@ -76,6 +78,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true # always the newest 1.26.x patch (stdlib security fixes)
           cache: true
 
       - name: Install govulncheck
@@ -99,6 +102,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+          check-latest: true # always the newest 1.26.x patch (stdlib security fixes)
           cache: true
 
       - name: Set build variables
