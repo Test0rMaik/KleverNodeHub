@@ -6,7 +6,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=klever
-ExecStart=/usr/local/bin/klever-node-hub --addr :9443 --domain localhost
+# The binary lives in its own directory owned by the service user, so the
+# dashboard can replace itself on self-update. (Do NOT put it in /usr/local/bin
+# and make that writable: the service user could then replace other binaries.)
+ExecStart=/opt/klever-node-hub/klever-node-hub --addr :9443 --domain localhost --data-dir /var/lib/klever-node-hub
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
@@ -16,6 +19,10 @@ NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
+# ProtectSystem makes /usr, /boot and /etc read-only for the service; these
+# paths stay writable: the binary dir (self-update) and the data dir.
+ReadWritePaths=/opt/klever-node-hub
+StateDirectory=klever-node-hub
 
 [Install]
 WantedBy=multi-user.target

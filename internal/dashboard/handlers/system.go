@@ -3,13 +3,16 @@ package handlers
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard"
@@ -189,7 +192,12 @@ func (h *SystemHandler) HandleSelfUpdate(w http.ResponseWriter, _ *http.Request)
 	// Write new binary to temp file next to current executable
 	tmpPath := execPath + ".update"
 	if err := os.WriteFile(tmpPath, newBinary, 0755); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write update: " + err.Error()})
+		msg := "write update: " + err.Error()
+		if errors.Is(err, syscall.EROFS) || errors.Is(err, os.ErrPermission) {
+			msg += " — the dashboard cannot write to its own binary directory (" + filepath.Dir(execPath) + "). " +
+				"Run it from a directory owned by the service user and listed in ReadWritePaths= of the systemd unit; see deploy/README.md"
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": msg})
 		return
 	}
 
