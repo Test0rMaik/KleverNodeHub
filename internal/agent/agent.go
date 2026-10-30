@@ -304,6 +304,7 @@ func (a *Agent) BuildAgentInfo(publicIP string) *models.AgentInfo {
 	if a.httpUpdate {
 		caps = append(caps, models.CapabilityHTTPUpdate)
 	}
+	caps = append(caps, models.CapabilityConfigPreview)
 	return &models.AgentInfo{
 		Version:      version.Version,
 		OS:           runtime.GOOS + "/" + runtime.GOARCH,
