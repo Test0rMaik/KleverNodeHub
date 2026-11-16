@@ -370,6 +370,11 @@
             if (pass !== pass2) { showStatus('Passphrases do not match', true); return; }
             btn.disabled = true;
             btn.textContent = 'Creating backup...';
+            // A large hub can take minutes; show that it is still working.
+            const started = Date.now();
+            const ticker = setInterval(() => {
+                btn.textContent = 'Creating backup... ' + Math.round((Date.now() - started) / 1000) + 's';
+            }, 1000);
             try {
                 const resp = await API.post('/api/system/backup/export', {
                     passphrase: pass,
@@ -380,7 +385,7 @@
                 if (!resp.ok) {
                     let msg = 'Backup failed';
                     try { msg = (await resp.json()).error || msg; } catch (e) {}
-                    showStatus(msg, true);
+                    showStatus(msg, true, true);
                     return;
                 }
                 const blob = await resp.blob();
@@ -397,8 +402,9 @@
                 document.getElementById('backup-curpass').value = '';
                 showStatus('Backup downloaded');
             } catch (e) {
-                showStatus('Backup failed: ' + e.message, true);
+                showStatus('Backup failed: ' + e.message, true, true);
             } finally {
+                clearInterval(ticker);
                 btn.disabled = false;
                 btn.textContent = 'Download encrypted backup';
             }
@@ -416,12 +422,24 @@
             document.getElementById('tab-' + name).classList.add('active');
         }
 
-        function showStatus(msg, isError) {
+        // sticky keeps the message until the next one (or a click), for errors
+        // the user must not miss after a long-running action.
+        let statusTimer = null;
+        function showStatus(msg, isError, sticky) {
             const el = document.getElementById('status-msg');
             el.className = isError ? 'alert alert-error mb-16' : 'alert alert-success mb-16';
             el.textContent = msg;
             el.classList.remove('hidden');
-            setTimeout(() => el.classList.add('hidden'), 3000);
+            clearTimeout(statusTimer);
+            if (sticky) {
+                el.onclick = () => el.classList.add('hidden');
+                el.title = 'Click to dismiss';
+                el.scrollIntoView({ block: 'nearest' });
+            } else {
+                el.onclick = null;
+                el.title = '';
+                statusTimer = setTimeout(() => el.classList.add('hidden'), 3000);
+            }
         }
 
         async function loadSettings() {

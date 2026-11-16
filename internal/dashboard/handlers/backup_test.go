@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/CTJaeger/KleverNodeHub/internal/auth"
+	"github.com/CTJaeger/KleverNodeHub/internal/backup"
 	"github.com/CTJaeger/KleverNodeHub/internal/crypto"
 	"github.com/CTJaeger/KleverNodeHub/internal/store"
 )
@@ -81,5 +83,42 @@ func TestBackupExport_Success(t *testing.T) {
 	}
 	if rec := postExport(h, `{"passphrase":"short","current_password":"admin-password-123"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("short passphrase: got %d, want 400", rec.Code)
+	}
+}
+
+// An export that takes longer than the server's WriteTimeout must still be
+// delivered. Over HTTP/2 (what browsers use against the TLS dashboard) the
+// write timeout resets the stream when it fires, so the deadline has to be
+// extended before the export runs, not after.
+func TestBackupExport_SlowExportOutlivesWriteTimeout(t *testing.T) {
+	h := newBackupHandlerFixture(t)
+	orig := exportBackup
+	exportBackup = func(db *store.DB, caDir, pass string, opts backup.ExportOptions, w io.Writer) (*backup.Manifest, error) {
+		time.Sleep(600 * time.Millisecond)
+		return orig(db, caDir, pass, opts, w)
+	}
+	t.Cleanup(func() { exportBackup = orig })
+
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(h.HandleExport))
+	srv.EnableHTTP2 = true
+	srv.Config.WriteTimeout = 200 * time.Millisecond
+	srv.StartTLS()
+	defer srv.Close()
+
+	resp, err := srv.Client().Post(srv.URL, "application/json",
+		strings.NewReader(`{"passphrase":"a-long-backup-passphrase","current_password":"admin-password-123"}`))
+	if err != nil {
+		t.Fatalf("request failed (write timeout hit?): %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.ProtoMajor != 2 {
+		t.Fatalf("proto = %s, want HTTP/2", resp.Proto)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body (stream reset?): %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || len(body) == 0 {
+		t.Fatalf("status %d, %d bytes", resp.StatusCode, len(body))
 	}
 }

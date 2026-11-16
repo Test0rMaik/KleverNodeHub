@@ -41,6 +41,12 @@ type SystemMetricsRow struct {
 type MetricsStore struct {
 	db *DB
 	mu sync.Mutex // batch insert serialization
+
+	// Cached history allowlist (see metrics_history.go).
+	histMu     sync.Mutex
+	histNames  map[string]struct{}
+	histGen    uint64
+	histLoaded time.Time
 }
 
 // NewMetricsStore creates a new metrics store.
@@ -51,6 +57,9 @@ func NewMetricsStore(db *DB) *MetricsStore {
 // InsertNodeMetrics inserts raw node metrics into metrics_recent.
 // Only numeric values are stored; string metrics are skipped.
 func (s *MetricsStore) InsertNodeMetrics(nodeID, serverID string, metrics map[string]float64, ts int64) error {
+	if len(metrics) == 0 {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -275,14 +284,21 @@ const purgeBatch = 2000
 // lock between batches. table/col are package-internal constants (never user
 // input), so interpolating them into the statement is safe.
 func (s *MetricsStore) purgeOldRows(table, col string, cutoff int64) (int64, error) {
+	return s.deleteInBatches(table, col+" < ?", cutoff)
+}
+
+// deleteInBatches deletes rows matching where in purgeBatch-sized chunks,
+// yielding the lock between batches. table/where are package-internal (never
+// user input); values go through args.
+func (s *MetricsStore) deleteInBatches(table, where string, args ...any) (int64, error) {
 	q := fmt.Sprintf(
-		`DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE %s < ? LIMIT %d)`,
-		table, table, col, purgeBatch,
+		`DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE %s LIMIT %d)`,
+		table, table, where, purgeBatch,
 	)
 	var total int64
 	for {
 		s.mu.Lock()
-		result, err := s.db.db.Exec(q, cutoff)
+		result, err := s.db.db.Exec(q, args...)
 		s.mu.Unlock()
 		if err != nil {
 			return total, fmt.Errorf("purge %s: %w", table, err)

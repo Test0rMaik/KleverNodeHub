@@ -74,6 +74,7 @@ func (s *AlertStore) CreateRule(rule *AlertRule) error {
 	if err != nil {
 		return fmt.Errorf("create alert rule: %w", err)
 	}
+	s.db.rulesGen.Add(1)
 	return nil
 }
 
@@ -99,6 +100,7 @@ func (s *AlertStore) UpdateRule(rule *AlertRule) error {
 	if rows == 0 {
 		return fmt.Errorf("alert rule not found: %s", rule.ID)
 	}
+	s.db.rulesGen.Add(1)
 	return nil
 }
 
@@ -116,6 +118,7 @@ func (s *AlertStore) DeleteRule(id string) error {
 	if rows == 0 {
 		return fmt.Errorf("alert rule not found: %s", id)
 	}
+	s.db.rulesGen.Add(1)
 	return nil
 }
 

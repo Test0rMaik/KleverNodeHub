@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w \
     -X github.com/CTJaeger/KleverNodeHub/internal/version.BuildTime=${BUILD_TIME}" \
     -o klever-node-hub ./cmd/dashboard
 
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates
 

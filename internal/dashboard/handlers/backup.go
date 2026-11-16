@@ -15,6 +15,12 @@ import (
 	"github.com/CTJaeger/KleverNodeHub/internal/store"
 )
 
+// exportWriteTimeout bounds building and, separately, sending a backup.
+const exportWriteTimeout = 15 * time.Minute
+
+// exportBackup is backup.Export; a variable so tests can simulate a slow export.
+var exportBackup = backup.Export
+
 // BackupHandler exports an encrypted backup of the whole hub (database + CA)
 // for migrating to another server. Import is deliberately CLI-only
 // (`--import-backup`), because it must run while the dashboard is stopped.
@@ -38,6 +44,12 @@ func NewBackupHandler(db *store.DB, caDir string, password *auth.PasswordManager
 // travels in the body (never the URL) and is not stored. Responds with the
 // encrypted file.
 func (h *BackupHandler) HandleExport(w http.ResponseWriter, r *http.Request) {
+	// Building the backup (DB snapshot, metric purge, encryption) can take
+	// minutes on a large hub, longer than the server-wide 30s write timeout.
+	// The deadline must be extended *before* that work: over HTTP/2 the
+	// timeout resets the stream when it fires, and a later extension can't
+	// revive it — the browser just sees a failed request.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(exportWriteTimeout))
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var req struct {
 		Passphrase      string `json:"passphrase"`
@@ -83,7 +95,7 @@ func (h *BackupHandler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = os.Remove(tmp.Name()) }()
 	defer func() { _ = tmp.Close() }()
 
-	m, err := backup.Export(h.db, h.caDir, req.Passphrase, backup.ExportOptions{IncludeMetrics: req.IncludeMetrics}, tmp)
+	m, err := exportBackup(h.db, h.caDir, req.Passphrase, backup.ExportOptions{IncludeMetrics: req.IncludeMetrics}, tmp)
 	if errors.Is(err, backup.ErrExportInProgress) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "a backup export is already running"})
 		return
@@ -95,8 +107,8 @@ func (h *BackupHandler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("backup exported by %s (%d servers, %d nodes, metrics: %v)", ip, m.Servers, m.Nodes, m.IncludesMetrics)
 
-	// Large backups (with metrics) can outlast the server-wide 30s write timeout.
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(15 * time.Minute))
+	// Fresh window for sending the file itself.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(exportWriteTimeout))
 	name := fmt.Sprintf("klever-node-hub-backup-%s.knhbak", time.Now().Format("20060102-150405"))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)

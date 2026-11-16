@@ -9,8 +9,10 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite" // Pure-Go SQLite driver
 )
@@ -20,6 +22,10 @@ type DB struct {
 	db   *sql.DB
 	mu   sync.RWMutex // Serialize writes (SQLite limitation)
 	path string       // file path, used to open independent connections for backups
+
+	// rulesGen is bumped on every alert-rule write so caches derived from
+	// the rules (the metric history allowlist) refresh immediately.
+	rulesGen atomic.Uint64
 }
 
 // Open opens or creates a SQLite database at the given path.
@@ -101,6 +107,9 @@ func (d *DB) migrate() error {
 			continue
 		}
 
+		// Some migrations touch the large metric tables and can take a while
+		// on a big database; say so instead of looking hung.
+		log.Printf("database: applying migration %d", version)
 		tx, err := d.db.Begin()
 		if err != nil {
 			return fmt.Errorf("begin migration %d: %w", version, err)
@@ -317,4 +326,10 @@ var migrations = []string{
 	// are rejected (agent-impersonation protection, with a smooth upgrade path
 	// for agents that do not sign yet).
 	`ALTER TABLE servers ADD COLUMN signed_auth INTEGER NOT NULL DEFAULT 0;`,
+
+	// Migration 10: drop idx_metrics_recent_node_time. Every metrics query
+	// filters by node_id AND metric_name (covered by
+	// idx_metrics_recent_name_time), so this index only cost disk space and
+	// write time on the largest table.
+	`DROP INDEX IF EXISTS idx_metrics_recent_node_time;`,
 }

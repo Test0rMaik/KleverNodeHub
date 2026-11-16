@@ -153,6 +153,13 @@ func (e *Evaluator) EnsureDefaults() {
 	log.Printf("alert evaluator: created %d default rules", len(DefaultRules()))
 }
 
+// legacyMetricNames maps metric names that never matched reported data to the
+// field names the Klever node uses.
+var legacyMetricNames = map[string]string{
+	"klv_isSyncing":      "klv_is_syncing",
+	"klv_connectedPeers": "klv_num_connected_peers",
+}
+
 // migrateRules renames legacy rules and ensures new builtins exist.
 func (e *Evaluator) migrateRules() {
 	// Migrate old "Node Offline" (agent.heartbeat) → "Agent Offline"
@@ -181,14 +188,23 @@ func (e *Evaluator) migrateRules() {
 		}
 	}
 
-	// Migrate sync-lag metric name from camelCase to snake_case (matches actual Klever API field)
-	syncRule, err := e.alertStore.GetRule("builtin-sync-lag")
-	if err == nil && syncRule.MetricName == "klv_isSyncing" {
-		syncRule.MetricName = "klv_is_syncing"
-		if err := e.alertStore.UpdateRule(syncRule); err != nil {
-			log.Printf("alert evaluator: migrate sync-lag metric name: %v", err)
-		} else {
-			log.Println("alert evaluator: migrated sync-lag metric name klv_isSyncing → klv_is_syncing")
+	// Migrate camelCase metric names to the snake_case fields the Klever node
+	// actually reports. Rules on the old names never matched any data (so e.g.
+	// the builtin Low Peers rule could never fire); the alert editor offered
+	// them too, so custom rules are migrated as well.
+	if rules, err := e.alertStore.ListRules(); err == nil {
+		for i := range rules {
+			newName, ok := legacyMetricNames[rules[i].MetricName]
+			if !ok {
+				continue
+			}
+			oldName := rules[i].MetricName
+			rules[i].MetricName = newName
+			if err := e.alertStore.UpdateRule(&rules[i]); err != nil {
+				log.Printf("alert evaluator: migrate metric name of rule %q: %v", rules[i].Name, err)
+			} else {
+				log.Printf("alert evaluator: migrated rule %q metric %s → %s", rules[i].Name, oldName, newName)
+			}
 		}
 	}
 

@@ -49,8 +49,18 @@ Export the whole hub as **one passphrase-encrypted file** and restore it on anot
 - **Update notifications follow this fork** — the update banner, dashboard self-update and agent updates use this repo's GitHub releases (built by CI on `v*-knh.*` tags), never upstream builds.
 - **Signed agent connections** — agents prove ownership of their private key on every WebSocket connect (replay-protected); a guessed server ID is no longer enough to impersonate an agent. Set `require_signed_agent_auth=true` once all agents are updated.
 
+### Local Docker (build from source)
+Run the fork's dashboard in Docker straight from a checkout — no registry image needed (the fork publishes none):
+- `make docker-up` builds `klever-node-hub:local` (version stamped from `git describe`) and starts it on `https://localhost:9443`; `make docker-logs` shows the first-start recovery codes; `make docker-down` stops it.
+- `make docker-import BACKUP=hub.knhbak` restores a backup into the volume; `make docker-compact` shrinks the database.
+- Data lives in the `klever-data` volume and survives rebuilds; to update, pull the repo and run `make docker-up` again. Override with `KNH_DOMAIN` / `KNH_PORT`; `KNH_BIND=127.0.0.1` keeps it local-only (Docker-published ports bypass ufw).
+- The Docker socket is not mounted (Docker self-update is disabled in the fork). If your kernel lacks the iptables `raw` table (Docker 28+ bridge networking fails with *Unable to enable DIRECT ACCESS FILTERING*), add a local `docker-compose.override.yml` with `network_mode: host` (and `build.network: host`, `ports: !reset []`).
+
 ### Reliability Improvements
 - **SQLite contention fixes** — `busy_timeout` + WAL mode + batched metric purges eliminate `SQLITE_BUSY` crashes and intermittent "heartbeat stalled" agent offline alerts under DB load
+- **Lean metric history** — only metrics that charts, alerts and the validator page read back are stored (plus the metric of every alert rule), cutting the database ~10×; existing hubs clean up in the background, `--compact-db` shrinks the file
+- **Reliable backup download** — large hubs no longer fail silently when the export takes longer than 30 s
+- **Low Peers alert fixed** — now watches the metric nodes actually report (`klv_num_connected_peers`)
 
 ### Agent Update Enhancements
 - **Custom agent-update source** — configure a direct binary URL for agent updates (supports `-knh.N` fork version suffixes), so fork users aren't pointed at upstream release assets
@@ -227,6 +237,7 @@ On first access (`https://your-server:9443`), a setup wizard will guide you thro
 | `--domain` | `localhost` | Domain for WebAuthn RP ID and TLS (optional, only needed for Passkey login) |
 | `--data-dir` | `~/.klever-node-hub` | Data directory for DB, certs, config |
 | `--reset-recovery-codes` | — | Generate new recovery codes and exit |
+| `--compact-db` | — | Remove history of metrics that are no longer recorded and shrink the database file, then exit (dashboard must be stopped; needs free disk in `--data-dir` about the size of the result) |
 
 ### Agent (on each validator server)
 

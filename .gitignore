@@ -22,6 +22,7 @@ coverage.out
 *.pem
 *.key
 config.enc
+*.knhbak
 
 # Chat context (local only)
 _chatcontext/
@@ -30,3 +31,7 @@ _chatcontext/
 .claude/
 CLAUDE.md
 
+
+# Local Docker overrides / agent plan
+docker-compose.override.yml
+.agent-plan.md

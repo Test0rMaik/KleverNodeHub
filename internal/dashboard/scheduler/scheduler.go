@@ -19,6 +19,7 @@ const (
 	decimationInterval    = 1 * time.Hour
 	purgeInterval         = 24 * time.Hour
 	systemCleanupInterval = 6 * time.Hour
+	historyCleanupDelay   = 2 * time.Minute
 )
 
 // Scheduler runs background maintenance jobs for metrics storage.
@@ -68,6 +69,7 @@ func (s *Scheduler) Start() {
 	s.cancel = cancel
 
 	go s.runDecimation(ctx)
+	go s.runHistoryCleanup(ctx)
 	go s.runPurge(ctx)
 	go s.runSystemCleanup(ctx)
 
@@ -115,6 +117,27 @@ func (s *Scheduler) decimateOnce() {
 	}
 	if count > 0 {
 		log.Printf("decimated %d raw metric rows into %s buckets", count, s.bucketSize)
+	}
+}
+
+// runHistoryCleanup removes, once per start, stored history of metrics that
+// are no longer recorded (the multi-GB backlog from before the allowlist).
+// Delayed so startup and the first decimation go first; batched internally so
+// agent writes keep flowing while it runs.
+func (s *Scheduler) runHistoryCleanup(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(historyCleanupDelay):
+	}
+	start := time.Now()
+	count, err := s.metrics.PurgeUnusedHistory()
+	if err != nil {
+		log.Printf("history cleanup error: %v", err)
+		return
+	}
+	if count > 0 {
+		log.Printf("history cleanup: removed %d rows of unrecorded metrics in %s (run --compact-db while stopped to shrink the file)", count, time.Since(start).Round(time.Second))
 	}
 }
 

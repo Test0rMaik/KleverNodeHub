@@ -90,7 +90,7 @@ func DefaultRules() []store.AlertRule {
 			ID:          "builtin-low-peers",
 			Name:        "Low Peers",
 			Enabled:     true,
-			MetricName:  "klv_connectedPeers",
+			MetricName:  "klv_num_connected_peers",
 			Condition:   "lt",
 			Threshold:   3,
 			DurationSec: 0,

@@ -532,7 +532,9 @@ func (h *AgentHandler) handleNodeMetrics(msg *models.Message) {
 		_ = h.nodeStore.Update(node)
 	}
 
-	if err := h.metricsStore.InsertNodeMetrics(nodeID, evt.ServerID, numeric, evt.CollectedAt); err != nil {
+	// Metadata above keeps every value for the live view; the history only
+	// keeps what charts/alerts read back.
+	if err := h.metricsStore.InsertNodeMetrics(nodeID, evt.ServerID, h.metricsStore.FilterHistory(numeric), evt.CollectedAt); err != nil {
 		log.Printf("store node metrics for %s: %v", nodeID, err)
 	}
 }

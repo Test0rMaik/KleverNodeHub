@@ -1,0 +1,31 @@
+# Run the dashboard locally from a locally built image.
+#
+#   make docker-up      # build (version from git describe) + start
+#   make docker-logs    # recovery codes are printed here on first start
+#   make docker-down
+#
+# The Docker socket is deliberately NOT mounted: the fork disables Docker-mode
+# self-update (no published images), so update by pulling the repo and running
+# `make docker-up` again. Data survives rebuilds in the `klever-data` volume.
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: klever-node-hub:local
+    container_name: klever-node-hub
+    command: ["--domain", "${KNH_DOMAIN:-localhost}"]
+    ports:
+      # KNH_BIND=127.0.0.1 publishes on localhost only (Docker-published ports
+      # bypass host firewall rules such as ufw).
+      - "${KNH_BIND:-0.0.0.0}:${KNH_PORT:-9443}:9443"
+    volumes:
+      - klever-data:/root/.klever-node-hub
+    restart: unless-stopped
+
+volumes:
+  klever-data:

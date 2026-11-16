@@ -135,7 +135,7 @@ func TestEvaluatorThresholdAlert(t *testing.T) {
 
 	// Insert metrics above threshold
 	now := time.Now().Unix()
-	metrics := map[string]float64{"klv_connectedPeers": 1.0}
+	metrics := map[string]float64{"klv_num_connected_peers": 1.0}
 	if err := metricsStore.InsertNodeMetrics("node1", "srv1", metrics, now-30); err != nil {
 		t.Fatalf("insert metrics: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestEvaluatorThresholdAlert(t *testing.T) {
 	// Create a rule with no duration requirement (fires immediately)
 	rule := &store.AlertRule{
 		ID: "test-peers", Name: "Low Peers", Enabled: true,
-		MetricName: "klv_connectedPeers", Condition: "lt", Threshold: 3,
+		MetricName: "klv_num_connected_peers", Condition: "lt", Threshold: 3,
 		DurationSec: 0, Severity: "warning", NodeFilter: "*", CooldownMin: 5,
 	}
 	if err := alertStore.CreateRule(rule); err != nil {
@@ -199,16 +199,16 @@ func TestEvaluatorResolvesAlert(t *testing.T) {
 
 	// Insert low peer metrics first
 	now := time.Now().Unix()
-	if err := metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_connectedPeers": 1}, now-30); err != nil {
+	if err := metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_num_connected_peers": 1}, now-30); err != nil {
 		t.Fatalf("insert metrics: %v", err)
 	}
-	if err := metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_connectedPeers": 1}, now-15); err != nil {
+	if err := metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_num_connected_peers": 1}, now-15); err != nil {
 		t.Fatalf("insert metrics: %v", err)
 	}
 
 	rule := &store.AlertRule{
 		ID: "test-peers", Name: "Low Peers", Enabled: true,
-		MetricName: "klv_connectedPeers", Condition: "lt", Threshold: 3,
+		MetricName: "klv_num_connected_peers", Condition: "lt", Threshold: 3,
 		DurationSec: 0, Severity: "warning", NodeFilter: "*", CooldownMin: 5,
 	}
 	if err := alertStore.CreateRule(rule); err != nil {
@@ -227,7 +227,7 @@ func TestEvaluatorResolvesAlert(t *testing.T) {
 	}
 
 	// Insert normal metrics (peers recovered)
-	if err := metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_connectedPeers": 10}, now); err != nil {
+	if err := metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_num_connected_peers": 10}, now); err != nil {
 		t.Fatalf("insert normal metrics: %v", err)
 	}
 
@@ -268,13 +268,13 @@ func TestEvaluatorPendingThenFiring(t *testing.T) {
 	_ = nodeStore.Create(node)
 
 	now := time.Now().Unix()
-	_ = metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_connectedPeers": 1}, now-30)
-	_ = metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_connectedPeers": 1}, now-15)
+	_ = metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_num_connected_peers": 1}, now-30)
+	_ = metricsStore.InsertNodeMetrics("node1", "srv1", map[string]float64{"klv_num_connected_peers": 1}, now-15)
 
 	// Rule with 60s duration — should stay pending
 	rule := &store.AlertRule{
 		ID: "dur-peers", Name: "Duration Low Peers", Enabled: true,
-		MetricName: "klv_connectedPeers", Condition: "lt", Threshold: 3,
+		MetricName: "klv_num_connected_peers", Condition: "lt", Threshold: 3,
 		DurationSec: 60, Severity: "warning", NodeFilter: "*", CooldownMin: 5,
 	}
 	_ = alertStore.CreateRule(rule)
@@ -558,4 +558,31 @@ func TestEvaluatorStartStop(t *testing.T) {
 	eval.Start()
 	time.Sleep(100 * time.Millisecond)
 	eval.Stop()
+}
+
+func TestEvaluatorMigratesLegacyMetricNames(t *testing.T) {
+	alertStore, metricsStore, nodeStore, serverStore, settingsStore, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// A pre-fix builtin and a custom rule created from the old editor options.
+	for _, r := range []store.AlertRule{
+		{ID: "builtin-low-peers", Name: "Low Peers", Enabled: true, MetricName: "klv_connectedPeers", Condition: "lt", Threshold: 3, Severity: "warning", NodeFilter: "*", Builtin: true},
+		{ID: "custom-sync", Name: "My Sync", Enabled: true, MetricName: "klv_isSyncing", Condition: "eq", Threshold: 1, Severity: "warning", NodeFilter: "*"},
+	} {
+		if err := alertStore.CreateRule(&r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	NewEvaluator(alertStore, metricsStore, nodeStore, serverStore, settingsStore, notify.NewManager(), nil).EnsureDefaults()
+
+	for id, want := range map[string]string{"builtin-low-peers": "klv_num_connected_peers", "custom-sync": "klv_is_syncing"} {
+		r, err := alertStore.GetRule(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.MetricName != want {
+			t.Errorf("%s metric = %q, want %q", id, r.MetricName, want)
+		}
+	}
 }

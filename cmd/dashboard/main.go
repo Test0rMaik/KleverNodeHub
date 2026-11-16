@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -45,6 +46,7 @@ func main() {
 	backupPassFile := flag.String("backup-passphrase-file", "", "File containing the backup passphrase (else $KNH_BACKUP_PASSPHRASE, else prompt)")
 	backupMetrics := flag.Bool("backup-include-metrics", false, "Include metric history in --export-backup (can be large)")
 	backupForce := flag.Bool("force", false, "With --import-backup: move an existing database/CA aside (to .bak-<time>) instead of refusing")
+	compactDB := flag.Bool("compact-db", false, "Remove history of metrics that are no longer recorded and shrink the database file, then exit (dashboard must be stopped)")
 	// Internal flags used by the Docker self-update flow. The orchestrator container
 	// spawns a sidecar that re-execs this binary with these flags to finish the
 	// container swap after the orchestrator has stopped itself.
@@ -79,6 +81,12 @@ func main() {
 		}
 		return
 	}
+	if *compactDB {
+		if err := runCompactDB(*dataDir, *addr); err != nil {
+			log.Fatalf("compact database: %v", err)
+		}
+		return
+	}
 
 	// Ensure data directory exists
 	if err := os.MkdirAll(*dataDir, 0700); err != nil {
@@ -92,6 +100,18 @@ func main() {
 	}
 
 	log.Printf("data directory: %s", *dataDir)
+
+	// Hold the data-dir lock for the process lifetime so --import-backup /
+	// --compact-db refuse to touch the data under a running hub. A second
+	// dashboard on the same data dir is refused too. Other lock errors (e.g. a
+	// filesystem without flock) only warn: the hub must still start.
+	if unlock, err := lockDataDir(*dataDir); errors.Is(err, errDataDirLocked) {
+		log.Fatalf("data directory %s is in use by another dashboard process", *dataDir)
+	} else if err != nil {
+		log.Printf("warning: cannot lock data directory: %v", err)
+	} else {
+		defer unlock()
+	}
 	cleanupBackupStaging(*dataDir)
 
 	// --- Database ---

@@ -1,5 +1,6 @@
 .PHONY: build-dashboard build-agent build run run-live seed fmt test lint security coverage clean \
-	build-linux-dashboard build-linux-agent build-linux deploy-agent deploy-dashboard deploy
+	build-linux-dashboard build-linux-agent build-linux deploy-agent deploy-dashboard deploy \
+	docker-build docker-up docker-down docker-logs docker-import docker-compact
 
 BIN_DIR := bin
 DASHBOARD_BIN := $(BIN_DIR)/klever-node-hub
@@ -64,6 +65,36 @@ deploy: build-linux
 	scp $(SSH_OPTS) $(LINUX_AGENT_BIN) $(REMOTE_USER)@$(REMOTE_HOST):$(REMOTE_PATH)/klever-agent
 	scp $(SSH_OPTS) $(LINUX_DASHBOARD_BIN) $(REMOTE_USER)@$(REMOTE_HOST):$(REMOTE_PATH)/klever-node-hub
 	ssh $(SSH_OPTS) $(REMOTE_USER)@$(REMOTE_HOST) 'systemctl restart klever-agent klever-node-hub'
+
+# Local Docker (see docker-compose.yml). Version metadata is exported so
+# compose can pass it to the image build as build args.
+DOCKER_ENV := VERSION=$(VERSION) GIT_COMMIT=$(GIT_COMMIT) BUILD_TIME=$(BUILD_TIME)
+
+docker-build:
+	$(DOCKER_ENV) docker compose build
+
+docker-up:
+	$(DOCKER_ENV) docker compose up -d --build
+
+docker-down:
+	docker compose down
+
+docker-logs:
+	docker compose logs -f dashboard
+
+# Restore a backup into the local volume: make docker-import BACKUP=hub.knhbak
+# Stops the dashboard first (import refuses while it runs); prompts for the passphrase.
+docker-import:
+	@test -n "$(BACKUP)" || (echo "Error: BACKUP is required (e.g., make docker-import BACKUP=hub.knhbak)" && exit 1)
+	@test -f "$(BACKUP)" || (echo "Error: $(BACKUP) not found" && exit 1)
+	docker compose down
+	docker compose run --rm -v "$(abspath $(BACKUP)):/b.knhbak:ro" dashboard --import-backup /b.knhbak --force
+	@echo "Imported. Start with: make docker-up"
+
+# Shrink the local database (removes history of unrecorded metrics + VACUUM).
+docker-compact:
+	docker compose down
+	docker compose run --rm dashboard --compact-db
 
 run:
 	go run -ldflags="$(LDFLAGS)" ./cmd/dashboard

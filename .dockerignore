@@ -1,0 +1,21 @@
+# Keep the build context small and never ship local state or secrets into an image.
+# The version is passed in as a build arg (see docker-compose.yml), so .git is not needed.
+.git
+.github
+.claude
+CLAUDE.md
+_chatcontext/
+bin/
+tmp/
+coverage.out
+*.pem
+*.key
+config.enc
+*.knhbak
+.agent-plan.md
+docker-compose.yml
+Dockerfile*
+docker-compose.override.yml
+*.db
+*.db-*
+.env*
