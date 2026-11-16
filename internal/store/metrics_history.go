@@ -1,8 +1,10 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -97,10 +99,11 @@ func (s *MetricsStore) FilterHistory(metrics map[string]float64) map[string]floa
 }
 
 // PurgeUnusedHistory deletes stored history (raw and archived) for metrics
-// that are no longer recorded — the backlog from before the allowlist. Runs
-// in batches so agent writes interleave. The freed pages are reused by SQLite;
-// the file only shrinks with CompactDB.
-func (s *MetricsStore) PurgeUnusedHistory() (int64, error) {
+// that are no longer recorded — the backlog from before the allowlist. paced
+// is for the running dashboard (see deleteByRowidWindows); the offline
+// --compact-db runs unpaced. The freed pages are reused by SQLite; the file
+// only shrinks with --compact-db.
+func (s *MetricsStore) PurgeUnusedHistory(ctx context.Context, paced bool) (int64, error) {
 	names, err := s.historyNames()
 	if err != nil {
 		return 0, err
@@ -113,7 +116,7 @@ func (s *MetricsStore) PurgeUnusedHistory() (int64, error) {
 
 	var total int64
 	for _, table := range []string{"metrics_recent", "metrics_archive"} {
-		n, err := s.deleteByRowidWindows(table, where, args...)
+		n, err := s.deleteByRowidWindows(ctx, table, where, paced, args...)
 		total += n
 		if err != nil {
 			return total, err
@@ -122,15 +125,47 @@ func (s *MetricsStore) PurgeUnusedHistory() (int64, error) {
 	return total, nil
 }
 
-// purgeWindow is how many rowids one deleteByRowidWindows step covers.
-const purgeWindow = 20000
+// Rowid-window sizing for deleteByRowidWindows. Offline (unpaced) runs use
+// the max; paced runs adapt between min and max so one step holds the single
+// DB connection for about purgeStepTarget — on a spinning disk a fixed large
+// window would freeze the dashboard for seconds per step.
+const (
+	purgeWindowMin  = 100
+	purgeWindowMax  = 20000
+	purgeStepTarget = 250 * time.Millisecond
+
+	// A paced step longer than this is logged: it blocked every other DB
+	// operation that long (single connection).
+	purgeSlowStep = 5 * time.Second
+	// purgeProgressEvery is how often a paced run logs progress; on a large
+	// hub on spinning disks it can run for a long time.
+	purgeProgressEvery = 5 * time.Minute
+)
+
+// nextPurgeWindow halves the window after a slow step and doubles it after a
+// fast one, within [purgeWindowMin, purgeWindowMax].
+func nextPurgeWindow(window int64, took time.Duration) int64 {
+	switch {
+	case took > purgeStepTarget:
+		window /= 2
+	case took < purgeStepTarget/4:
+		window *= 2
+	}
+	return max(purgeWindowMin, min(purgeWindowMax, window))
+}
 
 // deleteByRowidWindows deletes rows matching where by walking the table in
-// fixed rowid windows. Unlike deleteInBatches (fine when matches sit at the
-// front, e.g. oldest rows), this stays linear when kept rows are interleaved
-// with deleted ones: a LIMIT-based batch would rescan the growing prefix of
-// kept rows every time, which is quadratic on a multi-GB table.
-func (s *MetricsStore) deleteByRowidWindows(table, where string, args ...any) (int64, error) {
+// rowid windows. Unlike deleteInBatches (fine when matches sit at the front,
+// e.g. oldest rows), this stays linear when kept rows are interleaved with
+// deleted ones: a LIMIT-based batch would rescan the growing prefix of kept
+// rows every time, which is quadratic on a multi-GB table.
+//
+// paced (background use) starts at the smallest window (a cold spinning disk
+// must not block the dashboard on the very first step), grows it toward
+// ~purgeStepTarget per step and sleeps as long as each step took, so the
+// cleanup uses roughly half of the DB's time at most. It stops when ctx is
+// cancelled and logs progress periodically.
+func (s *MetricsStore) deleteByRowidWindows(ctx context.Context, table, where string, paced bool, args ...any) (int64, error) {
 	var lo, hi sql.NullInt64
 	if err := s.db.db.QueryRow(`SELECT MIN(rowid), MAX(rowid) FROM `+table).Scan(&lo, &hi); err != nil {
 		return 0, fmt.Errorf("purge %s: %w", table, err)
@@ -139,17 +174,56 @@ func (s *MetricsStore) deleteByRowidWindows(table, where string, args ...any) (i
 		return 0, nil
 	}
 	q := fmt.Sprintf(`DELETE FROM %s WHERE rowid >= ? AND rowid < ? AND %s`, table, where)
+	window := int64(purgeWindowMax)
+	if paced {
+		window = purgeWindowMin
+	}
 	var total int64
-	for start := lo.Int64; start <= hi.Int64; start += purgeWindow {
+	lastProgress := time.Now()
+	for start := lo.Int64; start <= hi.Int64; {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
 		s.mu.Lock()
-		result, err := s.db.db.Exec(q, append([]any{start, start + purgeWindow}, args...)...)
+		began := time.Now() // after the lock: waiting behind other writes isn't step time
+		result, err := s.db.db.Exec(q, append([]any{start, start + window}, args...)...)
+		took := time.Since(began)
 		s.mu.Unlock()
 		if err != nil {
 			return total, fmt.Errorf("purge %s: %w", table, err)
 		}
 		n, _ := result.RowsAffected()
 		total += n
-		time.Sleep(10 * time.Millisecond) // yield between windows
+		start += window
+		if paced {
+			if took > purgeSlowStep {
+				log.Printf("history cleanup: a %d-row step on %s took %s (slow disk?)", window, table, took.Round(time.Millisecond))
+			}
+			if time.Since(lastProgress) >= purgeProgressEvery {
+				log.Printf("history cleanup: %s %.0f%% (%d rows removed so far)", table, 100*float64(start-lo.Int64)/float64(hi.Int64-lo.Int64+1), total)
+				lastProgress = time.Now()
+			}
+			window = nextPurgeWindow(window, took)
+			select {
+			case <-ctx.Done():
+				return total, ctx.Err()
+			case <-time.After(max(took, 10*time.Millisecond)):
+			}
+		}
 	}
 	return total, nil
+}
+
+// DropUnusedIndexes removes idx_metrics_recent_node_time: every metrics query
+// filters by node_id AND metric_name (covered by idx_metrics_recent_name_time),
+// so it only costs disk space and write time. Offline use only (--compact-db):
+// on a large database it reads the whole index, which can take many minutes
+// on a spinning disk.
+func (d *DB) DropUnusedIndexes() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, err := d.db.Exec(`DROP INDEX IF EXISTS idx_metrics_recent_node_time`); err != nil {
+		return fmt.Errorf("drop unused index: %w", err)
+	}
+	return nil
 }

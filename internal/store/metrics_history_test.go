@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -44,7 +46,7 @@ func TestPurgeUnusedHistory(t *testing.T) {
 
 	// More junk rows than one rowid window, so the purge walks several windows.
 	base := time.Now().Unix() - 3600
-	junk := purgeWindow + 500
+	junk := purgeWindowMax + 500
 	tx, err := s.db.db.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +73,7 @@ func TestPurgeUnusedHistory(t *testing.T) {
 		}
 	}
 
-	removed, err := s.PurgeUnusedHistory()
+	removed, err := s.PurgeUnusedHistory(context.Background(), true)
 	if err != nil {
 		t.Fatalf("purge: %v", err)
 	}
@@ -97,19 +99,62 @@ func TestPurgeUnusedHistory(t *testing.T) {
 	}
 }
 
-func TestMigration_DropsUnusedMetricsIndex(t *testing.T) {
+// Startup must not touch the big metric tables: migration 10 is a no-op (it
+// used to drop this index, blocking startup for many minutes on HDDs). The
+// drop happens offline via DropUnusedIndexes.
+func TestMigration_KeepsIndex_DropUnusedIndexesRemovesIt(t *testing.T) {
 	s := setupMetricsStore(t)
-	var n int
-	if err := s.db.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_metrics_recent_node_time'`).Scan(&n); err != nil {
+	indexCount := func(name string) int {
+		var n int
+		if err := s.db.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, name).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if indexCount("idx_metrics_recent_node_time") != 1 {
+		t.Fatal("startup migrations dropped idx_metrics_recent_node_time")
+	}
+	if err := s.db.DropUnusedIndexes(); err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Error("idx_metrics_recent_node_time still exists")
+	if indexCount("idx_metrics_recent_node_time") != 0 {
+		t.Error("DropUnusedIndexes left idx_metrics_recent_node_time")
 	}
-	if err := s.db.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_metrics_recent_name_time'`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
+	if indexCount("idx_metrics_recent_name_time") != 1 {
 		t.Error("idx_metrics_recent_name_time is missing")
+	}
+	if err := s.db.DropUnusedIndexes(); err != nil { // idempotent
+		t.Errorf("second drop: %v", err)
+	}
+}
+
+func TestNextPurgeWindow(t *testing.T) {
+	cases := []struct {
+		window int64
+		took   time.Duration
+		want   int64
+	}{
+		{1000, 2 * time.Second, 500},           // slow (HDD) → shrink
+		{1000, 10 * time.Millisecond, 2000},    // fast → grow
+		{1000, purgeStepTarget / 2, 1000},      // on target → keep
+		{150, 2 * time.Second, purgeWindowMin}, // never below min
+		{15000, time.Millisecond, purgeWindowMax},
+	}
+	for _, c := range cases {
+		if got := nextPurgeWindow(c.window, c.took); got != c.want {
+			t.Errorf("nextPurgeWindow(%d, %s) = %d, want %d", c.window, c.took, got, c.want)
+		}
+	}
+}
+
+func TestPurgeUnusedHistory_StopsOnCancel(t *testing.T) {
+	s := setupMetricsStore(t)
+	if err := s.InsertNodeMetrics("node-1", "server-1", map[string]float64{"klv_total_supply": 1}, 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.PurgeUnusedHistory(ctx, true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }

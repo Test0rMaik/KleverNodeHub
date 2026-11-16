@@ -237,7 +237,7 @@ On first access (`https://your-server:9443`), a setup wizard will guide you thro
 | `--domain` | `localhost` | Domain for WebAuthn RP ID and TLS (optional, only needed for Passkey login) |
 | `--data-dir` | `~/.klever-node-hub` | Data directory for DB, certs, config |
 | `--reset-recovery-codes` | — | Generate new recovery codes and exit |
-| `--compact-db` | — | Remove history of metrics that are no longer recorded and shrink the database file, then exit (dashboard must be stopped; needs free disk in `--data-dir` about the size of the result) |
+| `--compact-db` | — | Remove history of metrics that are no longer recorded, drop an unused index and shrink the database file, then exit (dashboard must be stopped; needs free disk in `--data-dir` about the size of the result) |
 
 ### Agent (on each validator server)
 

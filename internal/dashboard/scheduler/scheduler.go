@@ -3,6 +3,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -122,8 +123,8 @@ func (s *Scheduler) decimateOnce() {
 
 // runHistoryCleanup removes, once per start, stored history of metrics that
 // are no longer recorded (the multi-GB backlog from before the allowlist).
-// Delayed so startup and the first decimation go first; batched internally so
-// agent writes keep flowing while it runs.
+// Delayed so startup and the first decimation go first; paced so agent writes
+// and the UI keep flowing while it runs (on a slow disk it just takes longer).
 func (s *Scheduler) runHistoryCleanup(ctx context.Context) {
 	select {
 	case <-ctx.Done():
@@ -131,7 +132,11 @@ func (s *Scheduler) runHistoryCleanup(ctx context.Context) {
 	case <-time.After(historyCleanupDelay):
 	}
 	start := time.Now()
-	count, err := s.metrics.PurgeUnusedHistory()
+	count, err := s.metrics.PurgeUnusedHistory(ctx, true)
+	if errors.Is(err, context.Canceled) {
+		log.Printf("history cleanup: stopped after removing %d rows; continues on next start", count)
+		return
+	}
 	if err != nil {
 		log.Printf("history cleanup error: %v", err)
 		return

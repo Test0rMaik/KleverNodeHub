@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -195,7 +196,12 @@ func runCompactDB(dataDir, addr string) error {
 	}()
 
 	fmt.Printf("Compacting %s (%s) — this can take a while on a large database...\n", dbPath, humanBytes(before))
-	removed, err := store.NewMetricsStore(db).PurgeUnusedHistory()
+	// Drop the unused index first: every delete below then has one index
+	// fewer to update.
+	if err := db.DropUnusedIndexes(); err != nil {
+		return err
+	}
+	removed, err := store.NewMetricsStore(db).PurgeUnusedHistory(context.Background(), false)
 	if err != nil {
 		return err
 	}

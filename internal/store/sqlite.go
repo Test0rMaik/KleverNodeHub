@@ -327,9 +327,11 @@ var migrations = []string{
 	// for agents that do not sign yet).
 	`ALTER TABLE servers ADD COLUMN signed_auth INTEGER NOT NULL DEFAULT 0;`,
 
-	// Migration 10: drop idx_metrics_recent_node_time. Every metrics query
-	// filters by node_id AND metric_name (covered by
-	// idx_metrics_recent_name_time), so this index only cost disk space and
-	// write time on the largest table.
-	`DROP INDEX IF EXISTS idx_metrics_recent_node_time;`,
+	// Migration 10: intentionally a no-op. In v0.3.87-knh.4 it dropped
+	// idx_metrics_recent_node_time, which on a multi-GB database on spinning
+	// disks blocked startup for tens of minutes (migrations run before the
+	// server listens). Never put work proportional to the metric tables here;
+	// the drop now happens offline in --compact-db (DropUnusedIndexes). Kept
+	// as a slot so databases that already applied it stay consistent.
+	`SELECT 1;`,
 }
