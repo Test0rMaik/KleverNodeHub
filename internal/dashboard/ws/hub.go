@@ -115,6 +115,12 @@ func NewHub(serverStore *store.ServerStore, nodeStore *store.NodeStore) *Hub {
 
 // Register adds a new agent connection to the hub.
 func (h *Hub) Register(serverID string) *AgentConn {
+	return h.RegisterAgent(serverID, false)
+}
+
+// RegisterAgent adds an agent connection; unsigned restricts it to updates
+// before it becomes visible to any sender.
+func (h *Hub) RegisterAgent(serverID string, unsigned bool) *AgentConn {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -127,6 +133,7 @@ func (h *Hub) Register(serverID string) *AgentConn {
 		ServerID:      serverID,
 		SendCh:        make(chan []byte, 64),
 		lastHeartbeat: time.Now(),
+		unsigned:      unsigned,
 	}
 	h.connections[serverID] = conn
 

@@ -81,11 +81,11 @@ func (h *AgentHandler) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 	log.Printf("agent WebSocket connected: %s", serverID)
 
 	// Register in hub
-	agentConn := h.hub.Register(serverID)
-	if r.Header.Get("X-Agent-Signature") == "" {
-		// authenticateAgent let an unsigned connect through (agent older than
-		// signing, server never signed): updates only.
-		agentConn.MarkUnsigned()
+	// authenticateAgent let an unsigned connect through (agent older than
+	// signing, server never signed): updates only, set before registration.
+	unsigned := r.Header.Get("X-Agent-Signature") == ""
+	agentConn := h.hub.RegisterAgent(serverID, unsigned)
+	if unsigned {
 		log.Printf("agent %s connected WITHOUT a signature: only updates and restarts are sent until its agent is updated", serverID)
 	}
 	h.hub.BroadcastToBrowsers("agent.connected", map[string]string{"server_id": serverID})

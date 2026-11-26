@@ -44,10 +44,11 @@ WARNINGS=0
 NOTES=0
 # Messages include text from the database (passkey and server names, agent
 # versions): print it with %s so planted escape sequences are not interpreted.
-ok()   { printf '%b[ OK ]%b %s\n' "$GREEN" "$RESET" "$*"; }
-warn() { printf '%b[WARN]%b %s\n' "$RED" "$RESET" "$*"; WARNINGS=$((WARNINGS + 1)); }
-note() { printf '%b[NOTE]%b %s\n' "$YELLOW" "$RESET" "$*"; NOTES=$((NOTES + 1)); }
-info() { echo "       $*"; }
+clean() { printf '%s' "$*" | tr -d '\000-\010\013-\037\177'; }  # drop control chars (incl. raw ESC)
+ok()   { printf '%b[ OK ]%b %s\n' "$GREEN" "$RESET" "$(clean "$*")"; }
+warn() { printf '%b[WARN]%b %s\n' "$RED" "$RESET" "$(clean "$*")"; WARNINGS=$((WARNINGS + 1)); }
+note() { printf '%b[NOTE]%b %s\n' "$YELLOW" "$RESET" "$(clean "$*")"; NOTES=$((NOTES + 1)); }
+info() { printf '       %s\n' "$(clean "$*")"; }
 section() { echo; echo "== $* =="; }
 
 TMP=$(mktemp -d)
