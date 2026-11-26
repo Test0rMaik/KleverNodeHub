@@ -288,6 +288,10 @@ func (h *UpdateHandler) HandleUpdateAgent(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "server not found"})
 		return
 	}
+	if trustsUpstreamKey(srv.AgentVersion) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf(errUpstreamKeyAgent, srv.AgentVersion)})
+		return
+	}
 
 	osName, arch := parseOSArch(srv.OSInfo)
 	var binaryData []byte
@@ -414,6 +418,13 @@ func (h *UpdateHandler) HandleUpdateAll(w http.ResponseWriter, r *http.Request) 
 			results = append(results, updateResult{
 				ServerID: srv.ID, Name: srv.Name,
 				Success: false, Error: "agent not connected",
+			})
+			continue
+		}
+		if trustsUpstreamKey(srv.AgentVersion) {
+			results = append(results, updateResult{
+				ServerID: srv.ID, Name: srv.Name,
+				Success: false, Error: fmt.Sprintf(errUpstreamKeyAgent, srv.AgentVersion),
 			})
 			continue
 		}
@@ -948,6 +959,20 @@ func validReleaseURL(u string) bool {
 	return strings.Count(rest, "/") == 1 // <tag>/<asset>
 }
 
+// errUpstreamKeyAgent explains why an upstream agent v0.3.89–v0.3.92 cannot be
+// updated from this repository's releases.
+const errUpstreamKeyAgent = "agent %s only trusts the archived upstream's release key and refuses these releases: update it to upstream's bridge release v0.3.93 first (from an upstream hub or by hand), or reinstall it with this dashboard's install command"
+
+// trustsUpstreamKey reports whether an agent version verifies updates against
+// upstream's release key (upstream v0.3.89–v0.3.92). Older upstream agents do
+// not verify at all, and upstream's bridge v0.3.93 trusts this repository's key.
+func trustsUpstreamKey(v string) bool {
+	if !release.IsReleaseVersion(v) || strings.Contains(v, "-knh.") {
+		return false
+	}
+	return version.Compare(v, "v0.3.89") >= 0 && version.Compare(v, "v0.3.93") < 0
+}
+
 // fetchSignedChecksums downloads a release's checksums.txt and its signature
 // and verifies the signature. Both files are required: an unsigned release
 // is never installed.
@@ -970,7 +995,10 @@ func fetchSignedChecksums(client *http.Client, tag string) (sums, sig []byte, er
 		return nil, nil, err
 	}
 	if sig, err = get(release.SignatureFile); err != nil {
-		return nil, nil, err
+		// knh.6/knh.7 releases carry only the legacy name.
+		if sig, err = get(release.LegacySignatureFile); err != nil {
+			return nil, nil, err
+		}
 	}
 	if err := release.VerifyChecksums(sums, sig); err != nil {
 		return nil, nil, err

@@ -163,3 +163,25 @@ func TestDisconnectBrowsers(t *testing.T) {
 	hub.UnregisterBrowser("b1")       // handler cleanup afterwards must not double-close
 	hub.BroadcastToBrowsers("x", nil) // and nothing is left to send to
 }
+
+func TestUnsignedConnection_GetsOnlyUpdates(t *testing.T) {
+	hub := NewHub(nil, nil)
+	hub.connections["srv-u"] = &AgentConn{ServerID: "srv-u", SendCh: make(chan []byte, 8)}
+	conn := hub.connections["srv-u"]
+	conn.MarkUnsigned()
+
+	for _, action := range []string{"key.import", "key.export", "config.write", "config.read", "node.provision", "security.check"} {
+		if err := hub.Send("srv-u", &models.Message{Action: action}); err == nil {
+			t.Errorf("%s was sent to an unsigned connection", action)
+		}
+	}
+	for _, action := range []string{"agent.update", "agent.restart"} {
+		if err := hub.Send("srv-u", &models.Message{Action: action}); err != nil {
+			t.Errorf("%s refused for an unsigned connection: %v", action, err)
+		}
+	}
+	hub.Broadcast(&models.Message{Action: "config.write"})
+	if n := len(conn.SendCh); n != 2 {
+		t.Errorf("%d messages queued, want only the 2 update/restart messages", n)
+	}
+}

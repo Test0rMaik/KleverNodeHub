@@ -92,7 +92,9 @@ jobs:
 
   docker:
     name: Docker images (GHCR)
-    needs: [test]
+    # After the release job: it runs in the protected environment (reviewer)
+    # and fails without a valid signature, so no image ships without both.
+    needs: [release]
     # Images for this repository only (upstream's Docker Hub images ended with
     # its archived repository). Pushed as ghcr.io/test0rmaik/<image>:<tag>
     # and :latest; Docker users pull new releases, the hub does not self-update.

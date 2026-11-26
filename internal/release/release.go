@@ -1,8 +1,8 @@
-// Package release verifies that a binary comes from an official fork release.
+// Package release verifies that a binary comes from an official release.
 //
 // CI hashes every release binary into checksums.txt (sha256sum format) and
-// signs that file with the release Ed25519 key (checksums.txt.sig, base64 of
-// the raw 64-byte signature). The matching public key is compiled into every
+// signs that file with the release Ed25519 key (release.sig, base64 of the raw
+// 64-byte signature; also published as checksums.txt.sig for knh.6/knh.7). The matching public key is compiled into every
 // hub and agent binary, so nothing a hub sends — and nothing a hub admin can
 // configure — can make an agent accept a binary that was not released.
 package release
@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -112,6 +113,14 @@ func Tag(checksums []byte) string {
 	}
 	return ""
 }
+
+// releaseVersionPattern matches release tags: vX.Y.Z (upstream, up to
+// v0.3.93) and vX.Y.Z-knh.N (this repository).
+var releaseVersionPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-knh\.\d+)?$`)
+
+// IsReleaseVersion reports whether a version string is a release tag; an agent
+// reporting anything else (dev, a custom label) was not installed from one.
+func IsReleaseVersion(v string) bool { return releaseVersionPattern.MatchString(v) }
 
 // AgentAssetName is the release asset name of the agent for a platform.
 func AgentAssetName(goos, goarch string) string {

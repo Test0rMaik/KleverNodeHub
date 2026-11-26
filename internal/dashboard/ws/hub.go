@@ -18,6 +18,29 @@ type AgentConn struct {
 	lastHeartbeat time.Time
 	capabilities  map[string]bool
 	mu            sync.Mutex
+
+	// unsigned is set for a connection that did not sign its upgrade (agents
+	// older than upstream v0.3.91, or anyone who merely knows the server ID).
+	// It only gets update and restart commands: enough to bring an old agent
+	// up to date, nothing that hands over keys or configs.
+	unsigned bool
+}
+
+// updateOnlyActions are the commands an unsigned connection may receive.
+var updateOnlyActions = map[string]bool{"agent.update": true, "agent.restart": true}
+
+// MarkUnsigned restricts the connection to update and restart commands.
+func (ac *AgentConn) MarkUnsigned() {
+	ac.mu.Lock()
+	ac.unsigned = true
+	ac.mu.Unlock()
+}
+
+// allows reports whether the connection may receive a message with action.
+func (ac *AgentConn) allows(action string) bool {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	return !ac.unsigned || updateOnlyActions[action]
 }
 
 // UpdateHeartbeat records the latest heartbeat time.
@@ -137,6 +160,9 @@ func (h *Hub) Send(serverID string, msg *models.Message) error {
 	if !ok {
 		return fmt.Errorf("agent not connected: %s", serverID)
 	}
+	if !conn.allows(msg.Action) {
+		return fmt.Errorf("agent %s connected without a signature: only updates are sent to it — update its agent first", serverID)
+	}
 
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -163,6 +189,9 @@ func (h *Hub) Broadcast(msg *models.Message) {
 	defer h.mu.RUnlock()
 
 	for _, conn := range h.connections {
+		if !conn.allows(msg.Action) {
+			continue
+		}
 		select {
 		case conn.SendCh <- data:
 		default:

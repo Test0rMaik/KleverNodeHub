@@ -100,3 +100,33 @@ func TestUnsignedSourcesDisabledByDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeConfigPreview_DropsHostileItems(t *testing.T) {
+	in := `{"items":[
+		{"id":"config.toml::Node/Name","file":"config.toml","key":"Node/Name","mine":"a","new":"b"},
+		{"id":"x\" ontoggle=\"alert(1)::k","file":"x\" ontoggle=\"alert(1)","key":"k"},
+		{"id":"config.yaml::other","file":"config.yaml","key":"k"},
+		{"id":"api.yaml::a\"b","file":"api.yaml","key":"a\"b"}
+	],"added_by_file":{"evil\"":3,"api.yaml":1},"download_source":"primary"}`
+	out := sanitizeConfigPreview(in)
+	if strings.Contains(out, "ontoggle") || strings.Contains(out, "evil") || strings.Contains(out, `a\"b`) {
+		t.Fatalf("hostile entries survived: %s", out)
+	}
+	if !strings.Contains(out, "Node/Name") || !strings.Contains(out, `"api.yaml":1`) {
+		t.Errorf("valid entries dropped: %s", out)
+	}
+	if got := sanitizeConfigPreview("not json"); got != `{"items":[]}` {
+		t.Errorf("garbage output not replaced: %s", got)
+	}
+}
+
+func TestTrustsUpstreamKey(t *testing.T) {
+	for v, want := range map[string]bool{
+		"v0.3.88": false, "v0.3.89": true, "v0.3.92": true, "0.3.90": true,
+		"v0.3.93": false, "v0.3.93-knh.1": false, "v0.3.87-knh.6": false, "dev": false, "": false,
+	} {
+		if got := trustsUpstreamKey(v); got != want {
+			t.Errorf("trustsUpstreamKey(%q) = %v, want %v", v, got, want)
+		}
+	}
+}

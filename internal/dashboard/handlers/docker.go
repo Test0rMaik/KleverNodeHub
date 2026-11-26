@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard"
@@ -424,8 +425,52 @@ func (h *DockerHandler) HandleConfigPreview(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if result.Error == "" {
+		result.Output = sanitizeConfigPreview(result.Output)
+	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+// previewFiles are the node config files a config preview may name.
+var previewFiles = map[string]bool{
+	"api.yaml": true, "config.yaml": true, "enableEpochs.yaml": true, "external.yaml": true,
+	"gasScheduleV1.yaml": true, "genesis.json": true, "nodesSetup.json": true, "config.toml": true,
+}
+
+// sanitizeConfigPreview drops preview items an honest agent never sends: an
+// unknown file, an id that is not "<file>::<key>", or control characters in
+// the key. The preview is agent-supplied text shown in the admin's browser.
+func sanitizeConfigPreview(out string) string {
+	var p struct {
+		Items          []map[string]any `json:"items"`
+		AddedByFile    map[string]int   `json:"added_by_file,omitempty"`
+		DownloadSource string           `json:"download_source"`
+	}
+	if err := json.Unmarshal([]byte(out), &p); err != nil {
+		return `{"items":[]}`
+	}
+	kept := p.Items[:0]
+	for _, it := range p.Items {
+		file, _ := it["file"].(string)
+		key, _ := it["key"].(string)
+		id, _ := it["id"].(string)
+		if !previewFiles[file] || id != file+"::"+key || strings.ContainsAny(key, "\x00\r\n<>\"'") {
+			continue
+		}
+		kept = append(kept, it)
+	}
+	p.Items = kept
+	for f := range p.AddedByFile {
+		if !previewFiles[f] {
+			delete(p.AddedByFile, f)
+		}
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return `{"items":[]}`
+	}
+	return string(b)
 }
 
 // HandleConfigVersionBackups handles GET /api/nodes/{id}/config/backups

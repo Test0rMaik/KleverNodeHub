@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -31,12 +30,9 @@ func NewSecurityHandler(auth *AuthHandler, servers *store.ServerStore, updates *
 	return &SecurityHandler{auth: auth, servers: servers, updates: updates, hub: hub}
 }
 
-// Releases are vX.Y.Z (upstream, up to v0.3.93) or vX.Y.Z-knh.N (this fork).
-var releaseVersionPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-knh\.\d+)?$`)
-
 // isReleaseVersion reports whether an agent version looks like a release tag.
 // Anything else (dev, a custom label) was not installed from a release.
-func isReleaseVersion(v string) bool { return releaseVersionPattern.MatchString(v) }
+func isReleaseVersion(v string) bool { return release.IsReleaseVersion(v) }
 
 type securityPasskey struct {
 	ID           string `json:"id"`

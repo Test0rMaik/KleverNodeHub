@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -17,12 +16,9 @@ import (
 	"github.com/CTJaeger/KleverNodeHub/internal/crypto"
 	"github.com/CTJaeger/KleverNodeHub/internal/dashboard"
 	"github.com/CTJaeger/KleverNodeHub/internal/models"
+	"github.com/CTJaeger/KleverNodeHub/internal/release"
 	"github.com/CTJaeger/KleverNodeHub/internal/store"
 )
-
-// releaseVersion matches release tags; an agent reporting anything else was not
-// installed from a release.
-var releaseVersion = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 
 // AgentHandler handles WebSocket connections from agents.
 type AgentHandler struct {
@@ -86,6 +82,12 @@ func (h *AgentHandler) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 
 	// Register in hub
 	agentConn := h.hub.Register(serverID)
+	if r.Header.Get("X-Agent-Signature") == "" {
+		// authenticateAgent let an unsigned connect through (agent older than
+		// signing, server never signed): updates only.
+		agentConn.MarkUnsigned()
+		log.Printf("agent %s connected WITHOUT a signature: only updates and restarts are sent until its agent is updated", serverID)
+	}
 	h.hub.BroadcastToBrowsers("agent.connected", map[string]string{"server_id": serverID})
 
 	// Run read and write loops
@@ -595,7 +597,7 @@ func (h *AgentHandler) handleAgentInfo(ctx context.Context, serverID string, msg
 			srv.AgentVersion = info.Version
 			_ = h.serverStore.Update(srv)
 			log.Printf("agent %s version updated to %s", serverID, info.Version)
-			if !releaseVersion.MatchString(info.Version) {
+			if !release.IsReleaseVersion(info.Version) {
 				log.Printf("WARNING: agent %s reports version %q, which is not a release — check this server", serverID, info.Version)
 			}
 		}

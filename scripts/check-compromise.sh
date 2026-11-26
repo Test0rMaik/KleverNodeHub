@@ -42,18 +42,21 @@ fi
 
 WARNINGS=0
 NOTES=0
-ok()   { echo -e "${GREEN}[ OK ]${RESET} $*"; }
-warn() { echo -e "${RED}[WARN]${RESET} $*"; WARNINGS=$((WARNINGS + 1)); }
-note() { echo -e "${YELLOW}[NOTE]${RESET} $*"; NOTES=$((NOTES + 1)); }
+# Messages include text from the database (passkey and server names, agent
+# versions): print it with %s so planted escape sequences are not interpreted.
+ok()   { printf '%b[ OK ]%b %s\n' "$GREEN" "$RESET" "$*"; }
+warn() { printf '%b[WARN]%b %s\n' "$RED" "$RESET" "$*"; WARNINGS=$((WARNINGS + 1)); }
+note() { printf '%b[NOTE]%b %s\n' "$YELLOW" "$RESET" "$*"; NOTES=$((NOTES + 1)); }
 info() { echo "       $*"; }
 section() { echo; echo "== $* =="; }
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# A release version looks like v1.2.3; anything else an agent reports
-# (dev, probe6, ...) was not installed from a release.
-is_release_version() { [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+# A release version looks like v1.2.3 (upstream) or v1.2.3-knh.4 (this
+# repository); anything else an agent reports (dev, probe6, ...) was not
+# installed from a release.
+is_release_version() { [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-knh\.[0-9]+)?$ ]]; }
 
 # ---------------------------------------------------------------------------
 # Official checksums of all releases: "<tag> <sha256> <asset>" per line.
@@ -238,7 +241,7 @@ wallet = setting('klever_admin_address')
 print('LIST\tlinked Klever wallet: %s' % (wallet or '(none)'))
 print('LIST\tpassword set: %s' % ('yes' if setting('password_hash') else 'no'))
 
-release = re.compile(r'^v?\d+\.\d+\.\d+$')
+release = re.compile(r'^v?\d+\.\d+\.\d+(-knh\.\d+)?$')
 for name, version, registered in db.execute('select name, agent_version, registered_at from servers order by registered_at'):
     if version and not release.match(version):
         print('WARN\tserver "%s" reports agent version "%s" (not a release) - registered %s' % (name, version, ts(registered)))

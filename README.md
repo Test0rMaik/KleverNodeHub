@@ -63,6 +63,13 @@ Export the whole hub as **one passphrase-encrypted file** and restore it on anot
 #### If your hub was exposed (before knh.6)
 Anyone could add a passkey before knh.6. Look in Settings → Passkeys for entries you didn't create and in your proxy log for `passkey/register/finish` answered with `200`. If you find one, assume the attacker had full admin access, including validator key export (`key.export`) and agent updates: rebuild the affected servers, rotate validator keys, and set up a **fresh** hub (new data dir, no backup import — backups contain the same secrets), then re-register the agents.
 
+### Moving from upstream (CTJaeger) to this repository
+Upstream's last release **v0.3.93** is a bridge: it trusts this repository's release key and offers its releases as the next update.
+1. **Hub:** update to upstream v0.3.93, then to the latest `v0.3.93-knh.N` here (dashboard self-update, or the binary from the releases page). The database is used as is; everyone logs in once more.
+2. **Agents:** agents up to v0.3.88 and v0.3.93 update from this dashboard as usual. Agents **v0.3.89–v0.3.92** only trust upstream's key: update them to v0.3.93 first, or reinstall them with the install command from this dashboard.
+3. **Docker:** switch the image to `ghcr.io/test0rmaik/klever-node-hub` (and `ghcr.io/test0rmaik/klever-agent`), then update with `docker pull`.
+4. Until an agent has connected with a signature, it only receives updates and restarts; the **Security Check** page lists such servers.
+
 ### Local Docker (build from source)
 Run the fork's dashboard in Docker straight from a checkout — no registry image needed (the fork publishes none):
 - `make docker-up` builds `klever-node-hub:local` (version stamped from `git describe`) and starts it on `https://localhost:9443`; `make docker-logs` shows the setup token for the first-run wizard (recovery codes are in `/root/.klever-node-hub/recovery-codes.txt` inside the container); `make docker-down` stops it.

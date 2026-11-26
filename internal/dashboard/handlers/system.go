@@ -88,14 +88,13 @@ func (h *SystemHandler) HandleSelfUpdate(w http.ResponseWriter, _ *http.Request)
 	}
 
 	// Docker mode: pull new image and recreate container (no binary needed)
-	// The fork publishes no Docker images (only GitHub release binaries), so a
-	// Docker self-update would pull a tag that doesn't exist or someone else's
-	// image. Keep upstream's implementation but disabled; flip the switch if the
-	// fork ever publishes images.
+	// Images are published on GHCR (ghcr.io/test0rmaik/klever-node-hub), but the
+	// in-container self-update stays off: it needs the Docker socket and would
+	// pull an unsigned image. Docker users pull the new tag and recreate.
 	if isRunningInDocker() && !dockerSelfUpdateEnabled {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success": false,
-			"message": "Docker self-update is not available in this fork (no published images) — rebuild the image from the fork and recreate the container",
+			"message": "Docker installs update by image: docker pull ghcr.io/test0rmaik/klever-node-hub:" + latest.TagName + " and recreate the container (e.g. docker compose up -d)",
 		})
 		return
 	}

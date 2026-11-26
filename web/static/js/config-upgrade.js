@@ -18,10 +18,13 @@
         'gasScheduleV1.yaml': true
     };
 
+    // Also escapes quotes: values from the agent end up inside attributes
+    // (data-id, data-file), where an unescaped " would let a hostile agent
+    // add an event handler.
     function esc(s) {
         var d = document.createElement('div');
         d.textContent = s == null ? '' : String(s);
-        return d.innerHTML;
+        return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     // Decisions are remembered per (id, mine, new) so a batch upgrade only asks
