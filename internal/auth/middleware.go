@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type contextKey string
@@ -43,6 +44,34 @@ func Authenticated(jm *JWTManager, r *http.Request) bool {
 	}
 	_, err := jm.ValidateAccessToken(token)
 	return err == nil
+}
+
+// RecentlyAuthenticated reports whether r carries a valid access token whose
+// user logged in (not just refreshed) within maxAge. Required before adding a
+// login method, so a stolen session can't make itself permanent.
+func RecentlyAuthenticated(jm *JWTManager, r *http.Request, maxAge time.Duration) bool {
+	token := extractToken(r)
+	if token == "" {
+		return false
+	}
+	claims, err := jm.ValidateAccessToken(token)
+	if err != nil || claims.AuthTime == 0 {
+		return false
+	}
+	return time.Since(time.Unix(claims.AuthTime, 0)) <= maxAge
+}
+
+// RequestAuthTime returns the login time of r's access token, or 0.
+func RequestAuthTime(jm *JWTManager, r *http.Request) int64 {
+	token := extractToken(r)
+	if token == "" {
+		return 0
+	}
+	claims, err := jm.ValidateAccessToken(token)
+	if err != nil {
+		return 0
+	}
+	return claims.AuthTime
 }
 
 // ClaimsFromContext extracts JWT claims from the request context.

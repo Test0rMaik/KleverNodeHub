@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -17,8 +16,12 @@ const validatorKeyFile = "validatorKey.pem"
 // The public key is extracted from the last 96 bytes of the decoded key data
 // (BLS12-381 public key = 96 bytes).
 func ExtractBLSPublicKey(configDir string) (string, error) {
-	path := filepath.Join(configDir, validatorKeyFile)
-	data, err := os.ReadFile(path)
+	root, err := os.OpenRoot(configDir) // never follow a symlink out of config/
+	if err != nil {
+		return "", fmt.Errorf("read validator key: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile(validatorKeyFile)
 	if err != nil {
 		return "", fmt.Errorf("read validator key: %w", err)
 	}

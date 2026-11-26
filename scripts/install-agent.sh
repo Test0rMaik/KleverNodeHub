@@ -29,6 +29,7 @@ DASHBOARD_URL=""
 BINARY_URL_BASE=""  # optional: overrides the default GitHub release URL
 ALLOW_UNSIGNED=""   # required with --binary-url-base: custom builds are not signed
 CA_FINGERPRINT=""   # SHA-256 of the dashboard CA, pins the dashboard during registration
+DATA_ROOTS=""       # optional, comma-separated: node data dirs the hub may use (agent.json allowed_data_roots)
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
         --binary-url-base) BINARY_URL_BASE="$2"; shift 2 ;;
         --allow-unsigned)  ALLOW_UNSIGNED=1; shift ;;
         --ca-fingerprint)  CA_FINGERPRINT="$2"; shift 2 ;;
+        --data-root)       DATA_ROOTS="$2"; shift 2 ;;
         *)                 error "Unknown argument: $1" ;;
     esac
 done
@@ -44,6 +46,18 @@ done
 [[ -z "$TOKEN" ]] && error "Missing --token argument"
 [[ -z "$DASHBOARD_URL" ]] && error "Missing --dashboard argument"
 [[ -n "$BINARY_URL_BASE" && -z "$ALLOW_UNSIGNED" ]] && error "--binary-url-base installs an unsigned build: add --allow-unsigned to confirm"
+if [[ -n "$DATA_ROOTS" ]]; then
+    # Checked before anything is installed: an empty list would mean "no restriction".
+    IFS=',' read -ra _roots <<< "$DATA_ROOTS"
+    _n=0
+    for _r in "${_roots[@]}"; do
+        _r="${_r// /}"
+        [[ -z "$_r" ]] && continue
+        [[ "$_r" == /* ]] || error "--data-root entries must be absolute paths: ${_r}"
+        _n=$((_n + 1))
+    done
+    [[ $_n -gt 0 ]] || error "--data-root is empty"
+fi
 
 # Check root
 [[ $EUID -ne 0 ]] && error "This script must be run as root (sudo)"
@@ -205,8 +219,24 @@ log "Systemd service created and enabled"
 
 # Register with dashboard
 log "Registering with dashboard..."
-if ! "${AGENT_BIN}" --register-token "$TOKEN" --dashboard-url "$DASHBOARD_URL" --ca-fingerprint "$CA_FINGERPRINT" --config-dir "$AGENT_CONFIG_DIR"; then
+# --register-only saves the registration and exits; the service runs the agent.
+# An existing registration on this host is replaced (the old agent.json is kept
+# as agent.json.bak-<time>).
+if ! "${AGENT_BIN}" --register-only --register-token "$TOKEN" --dashboard-url "$DASHBOARD_URL" --ca-fingerprint "$CA_FINGERPRINT" --config-dir "$AGENT_CONFIG_DIR"; then
     error "Registration failed"
+fi
+
+if [[ -n "$DATA_ROOTS" ]]; then
+    tmp=$(mktemp)
+    if ! { jq --arg r "$DATA_ROOTS" '.allowed_data_roots = ($r | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))' \
+             "$AGENT_CONFIG_DIR/agent.json" > "$tmp" && install -m 600 "$tmp" "$AGENT_CONFIG_DIR/agent.json"; }; then
+        rm -f "$tmp"
+        # Never leave an unrestricted agent behind when a restriction was asked for.
+        systemctl disable --now "${SERVICE_NAME}" >/dev/null 2>&1 || true
+        error "Failed to set allowed_data_roots — the agent is stopped and disabled; fix and rerun"
+    fi
+    rm -f "$tmp"
+    log "Node data dirs restricted to: ${DATA_ROOTS}"
 fi
 
 # Start or restart the service (restart is a no-op if not yet running,

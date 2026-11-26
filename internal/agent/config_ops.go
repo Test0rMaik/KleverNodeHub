@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,18 +27,55 @@ type ConfigFile struct {
 	Modified int64  `json:"modified"` // Unix timestamp
 }
 
-// ListConfigFiles lists configuration files in a node's config directory.
-func ListConfigFiles(dataDir string) ([]ConfigFile, error) {
-	configDir := filepath.Join(dataDir, "config")
-	if err := validateConfigPath(dataDir, configDir); err != nil {
+// openConfigRoot opens <dataDir>/config as an os.Root. Every config and key
+// file access goes through it, so the kernel keeps each read and write inside
+// that directory, symlinks included. The node container can write into
+// config/, so a check-then-open on plain paths would leave it a window to swap
+// a symlink in.
+func openConfigRoot(dataDir string) (*os.Root, error) {
+	return openSubRoot(dataDir, "config")
+}
+
+// openSubRoot opens <dataDir>/<sub> through a root on dataDir itself, so a
+// symlinked <sub> cannot lead out of the node directory (no Lstat-then-open
+// window either).
+func openSubRoot(dataDir, sub string) (*os.Root, error) {
+	dataRoot, err := os.OpenRoot(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("open data dir: %w", err)
+	}
+	defer func() { _ = dataRoot.Close() }()
+	root, err := dataRoot.OpenRoot(sub)
+	if err != nil {
+		return nil, fmt.Errorf("open %s dir: %w", sub, err)
+	}
+	return root, nil
+}
+
+// readDirIn lists a directory inside root ("." for the root itself).
+func readDirIn(root *os.Root, dir string) ([]os.DirEntry, error) {
+	f, err := root.Open(dir)
+	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = f.Close() }()
+	return f.ReadDir(-1)
+}
 
-	entries, err := os.ReadDir(configDir)
+// ListConfigFiles lists configuration files in a node's config directory.
+func ListConfigFiles(dataDir string) ([]ConfigFile, error) {
+	root, err := openConfigRoot(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+
+	entries, err := readDirIn(root, ".")
 	if err != nil {
 		return nil, fmt.Errorf("read config dir: %w", err)
 	}
 
+	configDir := filepath.Join(dataDir, "config")
 	var files []ConfigFile
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -67,15 +105,16 @@ func ReadConfigFile(dataDir, fileName string) (string, error) {
 	if err := plainName(fileName); err != nil {
 		return "", err
 	}
-	filePath := filepath.Join(dataDir, "config", fileName)
-	if err := checkConfigTarget(dataDir, filePath); err != nil {
-		return "", err
-	}
 	if err := validateConfigExtension(fileName); err != nil {
 		return "", err
 	}
+	root, err := openConfigRoot(dataDir)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = root.Close() }()
 
-	data, err := os.ReadFile(filePath)
+	data, err := root.ReadFile(fileName)
 	if err != nil {
 		return "", fmt.Errorf("read config file: %w", err)
 	}
@@ -88,22 +127,23 @@ func WriteConfigFile(dataDir, fileName, content string) error {
 	if err := plainName(fileName); err != nil {
 		return err
 	}
-	filePath := filepath.Join(dataDir, "config", fileName)
-	if err := checkConfigTarget(dataDir, filePath); err != nil {
-		return err
-	}
 	if err := validateWriteExtension(fileName); err != nil {
 		return err
 	}
+	root, err := openConfigRoot(dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
 
 	// Auto-backup before write
-	if _, err := os.Stat(filePath); err == nil {
-		if err := BackupConfigFile(dataDir, fileName); err != nil {
+	if _, err := root.Stat(fileName); err == nil {
+		if err := backupInRoot(root, fileName); err != nil {
 			return fmt.Errorf("backup before write: %w", err)
 		}
 	}
 
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+	if err := root.WriteFile(fileName, []byte(content), 0644); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}
 
@@ -115,33 +155,28 @@ func BackupConfigFile(dataDir, fileName string) error {
 	if err := plainName(fileName); err != nil {
 		return err
 	}
-	srcPath := filepath.Join(dataDir, "config", fileName)
-	if err := checkConfigTarget(dataDir, srcPath); err != nil {
+	root, err := openConfigRoot(dataDir)
+	if err != nil {
 		return err
 	}
-	// Validate before MkdirAll: a failed call must not leave directories behind.
-	if _, err := os.Stat(srcPath); err != nil {
-		return fmt.Errorf("read for backup: %w", err)
-	}
+	defer func() { _ = root.Close() }()
+	return backupInRoot(root, fileName)
+}
 
-	backupDir := filepath.Join(dataDir, "config", "backups")
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
-		return fmt.Errorf("create backup dir: %w", err)
-	}
-
-	data, err := os.ReadFile(srcPath)
+// backupInRoot copies fileName to backups/<fileName>.<timestamp>.bak.
+func backupInRoot(root *os.Root, fileName string) error {
+	// Read before MkdirAll: a failed call must not leave directories behind.
+	data, err := root.ReadFile(fileName)
 	if err != nil {
 		return fmt.Errorf("read for backup: %w", err)
+	}
+	if err := root.MkdirAll("backups", 0755); err != nil {
+		return fmt.Errorf("create backup dir: %w", err)
 	}
 
 	timestamp := time.Now().Format("20060102-150405")
 	backupName := fmt.Sprintf("%s.%s.bak", fileName, timestamp)
-	backupPath := filepath.Join(backupDir, backupName)
-	if err := checkConfigTarget(dataDir, backupPath); err != nil {
-		return err
-	}
-
-	if err := os.WriteFile(backupPath, data, 0644); err != nil {
+	if err := root.WriteFile(filepath.Join("backups", backupName), data, 0644); err != nil {
 		return fmt.Errorf("write backup: %w", err)
 	}
 
@@ -150,19 +185,24 @@ func BackupConfigFile(dataDir, fileName string) error {
 
 // ListConfigBackups lists backup files for a specific config file.
 func ListConfigBackups(dataDir, fileName string) ([]ConfigFile, error) {
-	backupDir := filepath.Join(dataDir, "config", "backups")
-	if err := validateConfigPath(dataDir, backupDir); err != nil {
+	root, err := openConfigRoot(dataDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, err
 	}
+	defer func() { _ = root.Close() }()
 
-	entries, err := os.ReadDir(backupDir)
+	entries, err := readDirIn(root, "backups")
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read backup dir: %w", err)
 	}
 
+	backupDir := filepath.Join(dataDir, "config", "backups")
 	prefix := fileName + "."
 	var files []ConfigFile
 	for _, entry := range entries {
@@ -189,11 +229,6 @@ func RestoreConfigBackup(dataDir, backupName string) error {
 	if err := plainName(backupName); err != nil {
 		return err
 	}
-	backupDir := filepath.Join(dataDir, "config", "backups")
-	backupPath := filepath.Join(backupDir, backupName)
-	if err := checkConfigTarget(dataDir, backupPath); err != nil {
-		return err
-	}
 
 	// Extract original filename from backup name (e.g., "config.toml.20260312-100000.bak" -> "config.toml")
 	originalName := extractOriginalName(backupName)
@@ -209,23 +244,25 @@ func RestoreConfigBackup(dataDir, backupName string) error {
 		return err
 	}
 
-	data, err := os.ReadFile(backupPath)
+	root, err := openConfigRoot(dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
+	data, err := root.ReadFile(filepath.Join("backups", backupName))
 	if err != nil {
 		return fmt.Errorf("read backup: %w", err)
 	}
 
 	// Backup current before restoring
-	destPath := filepath.Join(dataDir, "config", originalName)
-	if err := checkConfigTarget(dataDir, destPath); err != nil {
-		return err
-	}
-	if _, err := os.Stat(destPath); err == nil {
-		if err := BackupConfigFile(dataDir, originalName); err != nil {
+	if _, err := root.Stat(originalName); err == nil {
+		if err := backupInRoot(root, originalName); err != nil {
 			return fmt.Errorf("backup current before restore: %w", err)
 		}
 	}
 
-	if err := os.WriteFile(destPath, data, 0644); err != nil {
+	if err := root.WriteFile(originalName, data, 0644); err != nil {
 		return fmt.Errorf("restore config: %w", err)
 	}
 
@@ -237,22 +274,6 @@ func RestoreConfigBackup(dataDir, backupName string) error {
 func plainName(name string) error {
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) || filepath.Base(name) != name {
 		return fmt.Errorf("invalid file name %q", name)
-	}
-	return nil
-}
-
-// checkConfigTarget is validateConfigPath plus a symlink check: the target,
-// the config dir and its backups dir must not be symlinks, or a planted link
-// could redirect a read or write anywhere on the host.
-func checkConfigTarget(dataDir, target string) error {
-	if err := validateConfigPath(dataDir, target); err != nil {
-		return err
-	}
-	configDir := filepath.Join(dataDir, "config")
-	for _, p := range []string{configDir, filepath.Join(configDir, "backups"), filepath.Join(configDir, "key-backups"), target} {
-		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to follow symlink %s", p)
-		}
 	}
 	return nil
 }

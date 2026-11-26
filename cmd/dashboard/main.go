@@ -358,6 +358,9 @@ func main() {
 	updateHandler.SetAllowUnsignedBinaries(*allowUnsignedAgents)
 	settingsHandler := handlers.NewSettingsHandler(settingsStore)
 	backupHandler := handlers.NewBackupHandler(db, caDir, passwordMgr, loginLimiter)
+	backupHandler.SetRecentAuthCheck(func(r *http.Request) bool {
+		return auth.RecentlyAuthenticated(jwtMgr, r, handlers.ReauthWindow)
+	})
 	systemHandler := handlers.NewSystemHandler(versionChecker)
 	tokenManager := dashboard.NewTokenManager()
 	regHandler := handlers.NewRegistrationHandler(tokenManager, serverStore, ca)

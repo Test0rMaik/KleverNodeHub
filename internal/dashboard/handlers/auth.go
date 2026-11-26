@@ -36,6 +36,9 @@ type AuthHandler struct {
 	onRecoveryCodesChanged func([]auth.RecoveryCode)
 	// setupToken authorises the first-run wizard (see SetSetupToken).
 	setupToken string
+	// beginLimiter counts every passkey/wallet login start per IP: the public
+	// begin routes allocate server state, so floods must stay per-IP cheap.
+	beginLimiter *auth.RateLimiter
 	// onSessionsEnded runs after all sessions were ended (closes live sockets).
 	onSessionsEnded func()
 	rotateMu        sync.Mutex
@@ -58,7 +61,34 @@ func NewAuthHandler(jwt *auth.JWTManager, webauthn *auth.WebAuthnManager, recove
 		password: password,
 		limiter:  limiter,
 		klever:   klever,
+
+		beginLimiter: auth.NewRateLimiter(time.Minute, beginsPerMinute),
 	}
+}
+
+// limiterKey groups IPv6 clients by /64 (one customer network gets many
+// addresses), so rotating addresses within it does not dodge the limit.
+func limiterKey(ip string) string {
+	p := net.ParseIP(ip)
+	if p == nil || p.To4() != nil {
+		return ip
+	}
+	return p.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
+// beginsPerMinute is how many login starts one IP may make per minute: far more
+// than a person needs, far too few to keep the pending-ceremony store full.
+const beginsPerMinute = 30
+
+// allowBegin counts a login start from r's IP and reports whether it may proceed.
+func (h *AuthHandler) allowBegin(w http.ResponseWriter, r *http.Request) bool {
+	ip := limiterKey(extractIP(r))
+	if !h.beginLimiter.Allow(ip) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many login attempts, try again in a minute"})
+		return false
+	}
+	h.beginLimiter.RecordFailure(ip) // every start counts, not only failures
+	return true
 }
 
 // SetOnCredentialsChanged sets the callback for credential persistence.
@@ -93,7 +123,11 @@ func (h *AuthHandler) SetSigningKeySaver(fn func([]byte) error) { h.saveSigningK
 // endAllSessions invalidates every issued token by replacing the JWT signing
 // key, then logs the caller back in so that only this session survives. Used
 // after a credential change, so a stolen session can't outlive it.
-func (h *AuthHandler) endAllSessions(w http.ResponseWriter) (*auth.TokenPair, error) {
+//
+// authTime is the caller's login time (auth.RequestAuthTime, read BEFORE this
+// call: afterwards the old token no longer validates). The new session keeps
+// it, so ending sessions never turns a stale session into a fresh login.
+func (h *AuthHandler) endAllSessions(w http.ResponseWriter, authTime int64) (*auth.TokenPair, error) {
 	// One at a time, so the persisted key is always the one in use.
 	h.rotateMu.Lock()
 	defer h.rotateMu.Unlock()
@@ -111,7 +145,7 @@ func (h *AuthHandler) endAllSessions(w http.ResponseWriter) (*auth.TokenPair, er
 	if err := h.jwt.SetSigningKey(key); err != nil {
 		return nil, err
 	}
-	tokens, err := h.jwt.IssueTokenPair("admin")
+	tokens, err := h.jwt.IssueTokenPairAuthAt("admin", authTime)
 	if err != nil {
 		return nil, err
 	}
@@ -125,8 +159,8 @@ func (h *AuthHandler) endAllSessions(w http.ResponseWriter) (*auth.TokenPair, er
 
 // HandleLogoutAll ends every session except the caller's.
 // POST /api/auth/logout-all
-func (h *AuthHandler) HandleLogoutAll(w http.ResponseWriter, _ *http.Request) {
-	tokens, err := h.endAllSessions(w)
+func (h *AuthHandler) HandleLogoutAll(w http.ResponseWriter, r *http.Request) {
+	tokens, err := h.endAllSessions(w, auth.RequestAuthTime(h.jwt, r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -147,6 +181,25 @@ func (h *AuthHandler) SetSetupToken(token string) { h.setupToken = token }
 // validSetupToken compares in constant time; with no token configured it fails.
 func (h *AuthHandler) validSetupToken(given string) bool {
 	return h.setupToken != "" && subtle.ConstantTimeCompare([]byte(given), []byte(h.setupToken)) == 1
+}
+
+// ReauthWindow is how recent a real login must be to add or remove a login
+// method or to export a backup.
+const ReauthWindow = 15 * time.Minute
+
+// requireRecentAuth refuses unless the caller logged in within ReauthWindow.
+// Adding a passkey, password or wallet is how a stolen session would make
+// itself permanent, so a session alone is not enough for it. 403, not 401: a
+// 401 makes the browser refresh, which keeps the old login time anyway.
+func (h *AuthHandler) requireRecentAuth(w http.ResponseWriter, r *http.Request) bool {
+	if auth.RecentlyAuthenticated(h.jwt, r, ReauthWindow) {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"error":  "for security, log in again before changing login methods (your last login is older than 15 minutes)",
+		"reauth": true,
+	})
+	return false
 }
 
 // HandleSetupPassword sets the initial password during first-time setup.
@@ -170,7 +223,11 @@ func (h *AuthHandler) HandleSetupPassword(w http.ResponseWriter, r *http.Request
 	// password), before setup only the holder of the setup token.
 	// 403, not 401: the browser treats 401 as an expired session and would
 	// refresh-and-redirect instead of showing the message.
-	if !auth.Authenticated(h.jwt, r) {
+	authed := auth.Authenticated(h.jwt, r)
+	if authed && !h.requireRecentAuth(w, r) {
+		return
+	}
+	if !authed {
 		if h.setupComplete() {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "setup already completed: log in to set a password"})
 			return
@@ -191,8 +248,13 @@ func (h *AuthHandler) HandleSetupPassword(w http.ResponseWriter, r *http.Request
 		h.onPasswordChanged(hash)
 	}
 
-	// Auto-login after setup
-	tokens, err := h.jwt.IssueTokenPair("admin")
+	// Auto-login after setup; a logged-in caller keeps their login time.
+	var tokens *auth.TokenPair
+	if authed {
+		tokens, err = h.jwt.IssueTokenPairAuthAt("admin", auth.RequestAuthTime(h.jwt, r))
+	} else {
+		tokens, err = h.jwt.IssueTokenPair("admin")
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
 		return
@@ -208,7 +270,7 @@ func (h *AuthHandler) HandleSetupPassword(w http.ResponseWriter, r *http.Request
 // HandlePasswordLogin authenticates via password.
 // POST /api/auth/password
 func (h *AuthHandler) HandlePasswordLogin(w http.ResponseWriter, r *http.Request) {
-	ip := extractIP(r)
+	ip := limiterKey(extractIP(r))
 
 	if !h.limiter.Allow(ip) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many login attempts, please try again later"})
@@ -256,9 +318,23 @@ func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if !h.password.Verify(req.CurrentPassword) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
+	// Limited like password login: a session holder must not be able to guess
+	// the password here without limit (a hit counts as a fresh login).
+	ip := limiterKey(extractIP(r))
+	if h.limiter != nil && !h.limiter.Allow(ip) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many failed attempts, try again later"})
 		return
+	}
+	if !h.password.Verify(req.CurrentPassword) {
+		if h.limiter != nil {
+			h.limiter.RecordFailure(ip)
+		}
+		// 403, not 401: a 401 makes the browser refresh and retry.
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "current password is incorrect"})
+		return
+	}
+	if h.limiter != nil {
+		h.limiter.Reset(ip)
 	}
 
 	hash, err := h.password.SetPassword(req.NewPassword)
@@ -271,7 +347,7 @@ func (h *AuthHandler) HandleChangePassword(w http.ResponseWriter, r *http.Reques
 		h.onPasswordChanged(hash)
 	}
 
-	tokens, err := h.endAllSessions(w)
+	tokens, err := h.endAllSessions(w, time.Now().Unix()) // the current password was just proven
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "password changed, but ending other sessions failed: " + err.Error()})
 		return
@@ -324,6 +400,9 @@ func (h *AuthHandler) HandlePasskeyBeginRegister(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if !h.requireRecentAuth(w, r) {
+		return
+	}
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -356,6 +435,9 @@ func (h *AuthHandler) HandlePasskeyFinishRegister(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if !h.requireRecentAuth(w, r) {
+		return
+	}
 	sessionID := r.URL.Query().Get("session_id")
 	name := r.URL.Query().Get("name")
 	if sessionID == "" {
@@ -381,8 +463,9 @@ func (h *AuthHandler) HandlePasskeyFinishRegister(w http.ResponseWriter, r *http
 		h.onCredentialsChanged(h.webauthn.Credentials())
 	}
 
-	// Issue JWT tokens so the user is authenticated after registration
-	tokens, err := h.jwt.IssueTokenPair("admin")
+	// Fresh tokens for the caller, keeping their login time (adding a
+	// passkey is not a login).
+	tokens, err := h.jwt.IssueTokenPairAuthAt("admin", auth.RequestAuthTime(h.jwt, r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
 		return
@@ -440,6 +523,9 @@ func (h *AuthHandler) HandlePasskeyFinishLogin(w http.ResponseWriter, r *http.Re
 // HandlePasskeyBeginLogin starts the WebAuthn login ceremony.
 // POST /api/auth/passkey/login/begin
 func (h *AuthHandler) HandlePasskeyBeginLogin(w http.ResponseWriter, r *http.Request) {
+	if !h.allowBegin(w, r) {
+		return
+	}
 	options, sessionID, err := h.webauthn.BeginLogin()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -465,7 +551,7 @@ func (h *AuthHandler) HandleRecoveryLogin(w http.ResponseWriter, r *http.Request
 
 	// Rate-limited like password login: each attempt runs up to ten Argon2id
 	// hashes, so without a limit it is also a cheap way to load the server.
-	ip := extractIP(r)
+	ip := limiterKey(extractIP(r))
 	if h.limiter != nil && !h.limiter.AllowIP(ip) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many failed attempts, try again later"})
 		return
@@ -585,6 +671,11 @@ func (h *AuthHandler) HandleListPasskeys(w http.ResponseWriter, r *http.Request)
 // HandleDeletePasskey removes a passkey by ID.
 // DELETE /api/auth/passkeys/{id}
 func (h *AuthHandler) HandleDeletePasskey(w http.ResponseWriter, r *http.Request) {
+	// A stale stolen session must not remove the owner's passkeys (and with
+	// them, through the session rotation below, the owner's own sessions).
+	if !h.requireRecentAuth(w, r) {
+		return
+	}
 	passkeyID := r.PathValue("id")
 	if passkeyID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing passkey id"})
@@ -608,7 +699,7 @@ func (h *AuthHandler) HandleDeletePasskey(w http.ResponseWriter, r *http.Request
 	}
 
 	// A removed passkey may be the one an intruder used: end its sessions.
-	tokens, err := h.endAllSessions(w)
+	tokens, err := h.endAllSessions(w, auth.RequestAuthTime(h.jwt, r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "passkey deleted, but ending other sessions failed: " + err.Error()})
 		return
@@ -619,6 +710,9 @@ func (h *AuthHandler) HandleDeletePasskey(w http.ResponseWriter, r *http.Request
 // HandleKleverChallenge generates a challenge nonce for Klever Extension login.
 // GET /api/auth/klever/challenge?address=klv1...
 func (h *AuthHandler) HandleKleverChallenge(w http.ResponseWriter, r *http.Request) {
+	if !h.allowBegin(w, r) {
+		return
+	}
 	address := r.URL.Query().Get("address")
 	if address == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "address parameter required"})
@@ -670,6 +764,9 @@ func (h *AuthHandler) HandleKleverVerify(w http.ResponseWriter, r *http.Request)
 // HandleKleverSetupChallenge generates a challenge for wallet linking (protected).
 // POST /api/setup/klever/challenge
 func (h *AuthHandler) HandleKleverSetupChallenge(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRecentAuth(w, r) {
+		return
+	}
 	var req struct {
 		Address string `json:"address"`
 	}
@@ -690,6 +787,9 @@ func (h *AuthHandler) HandleKleverSetupChallenge(w http.ResponseWriter, r *http.
 // HandleKleverSetup verifies ownership and registers a Klever admin address (protected).
 // POST /api/setup/klever
 func (h *AuthHandler) HandleKleverSetup(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRecentAuth(w, r) {
+		return
+	}
 	var req struct {
 		Address   string `json:"address"`
 		Challenge string `json:"challenge"`
@@ -720,6 +820,9 @@ func (h *AuthHandler) HandleKleverSetup(w http.ResponseWriter, r *http.Request) 
 // HandleKleverRemove removes the registered Klever admin address (protected).
 // DELETE /api/auth/klever
 func (h *AuthHandler) HandleKleverRemove(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRecentAuth(w, r) {
+		return
+	}
 	// Same rule as HandleDeletePasskey: never remove the last login method.
 	if !h.password.HasPassword() && !h.webauthn.HasCredentials() {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "cannot remove the last login method: add a password or passkey first"})

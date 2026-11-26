@@ -89,6 +89,7 @@ func main() {
 	configDir := flag.String("config-dir", defaultConfigDir(), "Config directory")
 	dashboardURL := flag.String("dashboard-url", "", "Dashboard URL for registration (e.g. https://192.168.1.10:9443)")
 	registerToken := flag.String("register-token", "", "One-time registration token")
+	registerOnly := flag.Bool("register-only", false, "Register with --register-token, save the config and exit (used by the installer)")
 	caFingerprint := flag.String("ca-fingerprint", "", "SHA-256 of the dashboard CA (from the install command); required unless the dashboard has a publicly trusted certificate")
 	dockerSocket := flag.String("docker-socket", "/var/run/docker.sock", "Docker socket path")
 	flag.Parse()
@@ -99,18 +100,40 @@ func main() {
 	}
 
 	// --- Agent config ---
-	ag := agent.New(*configDir)
-	if err := ag.LoadConfig(); err != nil {
-		// Not registered yet
-		if *registerToken == "" || *dashboardURL == "" {
-			log.Fatal("agent not registered. Use --dashboard-url and --register-token to register")
-		}
+	if *registerOnly && *registerToken == "" {
+		log.Fatal("--register-only needs --register-token")
+	}
 
+	ag := agent.New(*configDir)
+	loadErr := ag.LoadConfig()
+	registered := loadErr == nil && ag.Config() != nil && ag.Config().ServerID != ""
+	switch {
+	case *registerToken != "":
+		// A token means "register now", also over an existing registration
+		// (before knh.7 it was silently ignored and the old identity kept).
+		if *dashboardURL == "" {
+			log.Fatal("--register-token needs --dashboard-url")
+		}
+		if registered {
+			log.Printf("replacing existing registration (server %s, dashboard %s)", ag.Config().ServerID, ag.Config().DashboardURL)
+		}
 		log.Printf("registering with dashboard at %s...", *dashboardURL)
 		if err := ag.Register(*dashboardURL, *registerToken, *caFingerprint); err != nil {
-			log.Fatalf("registration failed: %v", err)
+			// A token left in a start command (e.g. Docker args) is used up
+			// after the first start: keep running on the existing registration.
+			if !registered || *registerOnly {
+				log.Fatalf("registration failed: %v", err)
+			}
+			log.Printf("registration failed (%v) — keeping the existing registration; remove --register-token from the start command", err)
+		} else {
+			log.Println("registration successful")
 		}
-		log.Println("registration successful")
+	case loadErr != nil:
+		log.Fatal("agent not registered. Use --dashboard-url and --register-token to register")
+	}
+	if *registerOnly {
+		log.Println("registration saved; exiting (--register-only)")
+		return
 	}
 
 	config := ag.Config()

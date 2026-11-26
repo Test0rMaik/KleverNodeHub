@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -183,8 +184,16 @@ func (a *Agent) SaveConfig() error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
+	// Write a temp file and rename it over agent.json, so a failed write
+	// (disk full) never leaves the host without a registration.
 	path := filepath.Join(a.configDir, configFileName)
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -199,10 +208,29 @@ func (a *Agent) IsRegistered() bool {
 // Register performs initial registration with the dashboard.
 // caFingerprint (SHA-256 of the hub CA, from the install command) pins the hub
 // when its certificate is not publicly trusted, i.e. a direct connection.
+//
+// An existing registration is replaced: the old agent.json is kept as
+// agent.json.bak-<time>, and the options only set by hand on this host
+// (allow_unsigned_updates, allowed_data_roots, agent_port) carry over.
 func (a *Agent) Register(dashboardURL, token, caFingerprint string) error {
+	prev := a.config
 	a.config = &Config{
 		DashboardURL: dashboardURL,
 	}
+	if prev != nil {
+		a.config.AgentPort = prev.AgentPort
+		a.config.AllowUnsignedUpdates = prev.AllowUnsignedUpdates
+		a.config.AllowedDataRoots = prev.AllowedDataRoots
+		if prev.AllowUnsignedUpdates && prev.DashboardURL != dashboardURL {
+			log.Printf("WARNING: allow_unsigned_updates stays enabled for the new dashboard %s — remove it from agent.json unless you trust that hub with unsigned agent builds", dashboardURL)
+		}
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			a.config = prev // a failed registration leaves the old one in force
+		}
+	}()
 
 	hostname, _ := os.Hostname()
 
@@ -229,11 +257,43 @@ func (a *Agent) Register(dashboardURL, token, caFingerprint string) error {
 	a.config.KeyPEM = resp.KeyPEM
 	a.config.CACertPEM = resp.CACertPEM
 
+	if err := a.backupConfig(); err != nil {
+		return err
+	}
 	if err := a.SaveConfig(); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 
+	ok = true
 	log.Printf("registered as server %s", resp.ServerID)
+	return nil
+}
+
+// keepConfigBackups is how many agent.json.bak-* copies are kept; each holds
+// a private key, so they must not pile up.
+const keepConfigBackups = 3
+
+// backupConfig copies an existing agent.json to agent.json.bak-<time> before a
+// re-registration overwrites it (a copy, so agent.json stays in place until the
+// new one is written).
+func (a *Agent) backupConfig() error {
+	path := filepath.Join(a.configDir, configFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil // nothing to keep
+	}
+	bak := path + ".bak-" + time.Now().UTC().Format("20060102-150405")
+	if err := os.WriteFile(bak, data, 0600); err != nil {
+		return fmt.Errorf("back up existing config: %w", err)
+	}
+	log.Printf("previous registration kept as %s", bak)
+
+	if old, _ := filepath.Glob(path + ".bak-*"); len(old) > keepConfigBackups {
+		sort.Strings(old) // timestamped names sort oldest first
+		for _, f := range old[:len(old)-keepConfigBackups] {
+			_ = os.Remove(f)
+		}
+	}
 	return nil
 }
 

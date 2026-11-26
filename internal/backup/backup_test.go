@@ -229,3 +229,28 @@ func TestConcurrentExportRejected(t *testing.T) {
 		t.Fatalf("expected ErrExportInProgress, got %v", err)
 	}
 }
+
+func TestStripSecrets_RemovesSigningKeyFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snap.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := "signing-key-marker-0123456789abcdef"
+	if err := store.NewSettingsStore(db).Set("jwt_signing_key", marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := stripSecrets(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil { // checkpoints the WAL into the file
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(marker)) {
+		t.Error("signing key still readable in the snapshot file")
+	}
+}

@@ -76,10 +76,20 @@ type JWTClaims struct {
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
 	TokenType string `json:"type"` // "access" or "refresh"
+	// AuthTime is when the user last really authenticated (password, passkey,
+	// wallet, recovery code). Refreshes carry it over unchanged, so a stolen
+	// long-lived session can't pass as a recent login (see RecentlyAuthenticated).
+	AuthTime int64 `json:"auth_time,omitempty"`
 }
 
-// IssueTokenPair creates a new access + refresh token pair.
+// IssueTokenPair creates a new access + refresh token pair for a fresh login.
 func (jm *JWTManager) IssueTokenPair(subject string) (*TokenPair, error) {
+	return jm.IssueTokenPairAuthAt(subject, time.Now().Unix())
+}
+
+// IssueTokenPairAuthAt creates a token pair that keeps an earlier login time:
+// for new tokens that do not come from a login (refresh, session rotation).
+func (jm *JWTManager) IssueTokenPairAuthAt(subject string, authTime int64) (*TokenPair, error) {
 	now := time.Now()
 
 	accessToken, err := jm.createToken(JWTClaims{
@@ -87,6 +97,7 @@ func (jm *JWTManager) IssueTokenPair(subject string) (*TokenPair, error) {
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(accessTokenExpiry).Unix(),
 		TokenType: "access",
+		AuthTime:  authTime,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create access token: %w", err)
@@ -97,6 +108,7 @@ func (jm *JWTManager) IssueTokenPair(subject string) (*TokenPair, error) {
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(refreshTokenExpiry).Unix(),
 		TokenType: "refresh",
+		AuthTime:  authTime,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create refresh token: %w", err)
@@ -139,7 +151,7 @@ func (jm *JWTManager) RefreshTokenPair(refreshToken string) (*TokenPair, error) 
 	if err != nil {
 		return nil, fmt.Errorf("invalid refresh token: %w", err)
 	}
-	return jm.IssueTokenPair(claims.Subject)
+	return jm.IssueTokenPairAuthAt(claims.Subject, claims.AuthTime)
 }
 
 func (jm *JWTManager) createToken(claims JWTClaims) (string, error) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,23 +26,31 @@ type KeyInfo struct {
 
 // GetKeyInfo returns information about the validator key for a node.
 func GetKeyInfo(dataDir string) (*KeyInfo, error) {
-	configDir := filepath.Join(dataDir, "config")
-	keyPath := filepath.Join(configDir, validatorKeyFile)
-
-	info, err := os.Stat(keyPath)
+	root, err := openConfigRoot(dataDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
+			return &KeyInfo{}, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+
+	info, err := root.Stat(validatorKeyFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			return &KeyInfo{}, nil
 		}
 		return nil, fmt.Errorf("stat key file: %w", err)
 	}
 
-	pubKey, _ := ExtractBLSPublicKey(configDir)
+	var pubKey string
+	if data, err := root.ReadFile(validatorKeyFile); err == nil {
+		pubKey, _ = parseBLSPublicKeyFromPEM(string(data))
+	}
 
 	// Check for backups
-	backupDir := filepath.Join(configDir, "key-backups")
 	hasBackup := false
-	if entries, err := os.ReadDir(backupDir); err == nil {
+	if entries, err := readDirIn(root, "key-backups"); err == nil {
 		hasBackup = len(entries) > 0
 	}
 
@@ -108,38 +117,36 @@ func (d *DockerClient) GenerateKey(ctx context.Context, dataDir, imageTag string
 	// Cleanup container
 	_ = d.RemoveContainer(ctx, containerID, true)
 
-	// Move generated key to config dir
-	configDir := filepath.Join(dataDir, "config")
-	generatedKey := filepath.Join(walletDir, validatorKeyFile)
-	destKey := filepath.Join(configDir, validatorKeyFile)
-
-	// Check if key was generated
-	if _, err := os.Stat(generatedKey); os.IsNotExist(err) {
-		return nil, fmt.Errorf("keygenerator did not produce a key file")
+	// Move the generated key from wallet/ to config/, both through os.Root:
+	// the node container writes into both directories.
+	walletRoot, err := openSubRoot(dataDir, "wallet")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = walletRoot.Close() }()
+	data, err := walletRoot.ReadFile(validatorKeyFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("keygenerator did not produce a key file")
+		}
+		return nil, fmt.Errorf("read generated key: %w", err)
 	}
 
+	cfgRoot, err := openConfigRoot(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = cfgRoot.Close() }()
 	// Backup existing key if present
-	if _, err := os.Stat(destKey); err == nil {
-		if err := BackupKey(dataDir); err != nil {
+	if _, err := cfgRoot.Stat(validatorKeyFile); err == nil {
+		if err := backupKeyInRoot(cfgRoot); err != nil {
 			return nil, fmt.Errorf("backup existing key: %w", err)
 		}
 	}
-
-	// Move key
-	if err := checkConfigTarget(dataDir, destKey); err != nil {
-		return nil, err
-	}
-	if fi, err := os.Lstat(generatedKey); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refusing to follow symlink %s", generatedKey)
-	}
-	data, err := os.ReadFile(generatedKey)
-	if err != nil {
-		return nil, fmt.Errorf("read generated key: %w", err)
-	}
-	if err := os.WriteFile(destKey, data, 0600); err != nil {
+	if err := cfgRoot.WriteFile(validatorKeyFile, data, 0600); err != nil {
 		return nil, fmt.Errorf("write key to config: %w", err)
 	}
-	_ = os.Remove(generatedKey)
+	_ = walletRoot.Remove(validatorKeyFile)
 
 	return GetKeyInfo(dataDir)
 }
@@ -190,20 +197,20 @@ func ImportKey(dataDir, pemContent string) (*KeyInfo, error) {
 		return nil, fmt.Errorf("no public key found in PEM data")
 	}
 
-	configDir := filepath.Join(dataDir, "config")
-	destKey := filepath.Join(configDir, validatorKeyFile)
-	if err := checkConfigTarget(dataDir, destKey); err != nil {
+	root, err := openConfigRoot(dataDir)
+	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = root.Close() }()
 
 	// Backup existing key if present
-	if _, err := os.Stat(destKey); err == nil {
-		if err := BackupKey(dataDir); err != nil {
+	if _, err := root.Stat(validatorKeyFile); err == nil {
+		if err := backupKeyInRoot(root); err != nil {
 			return nil, fmt.Errorf("backup existing key: %w", err)
 		}
 	}
 
-	if err := os.WriteFile(destKey, []byte(pemContent), 0600); err != nil {
+	if err := root.WriteFile(validatorKeyFile, []byte(pemContent), 0600); err != nil {
 		return nil, fmt.Errorf("write imported key: %w", err)
 	}
 
@@ -212,13 +219,13 @@ func ImportKey(dataDir, pemContent string) (*KeyInfo, error) {
 
 // ExportKey reads and returns the validator key PEM content.
 func ExportKey(dataDir string) (string, error) {
-	configDir := filepath.Join(dataDir, "config")
-	keyPath := filepath.Join(configDir, validatorKeyFile)
-	if err := checkConfigTarget(dataDir, keyPath); err != nil { // a symlink could expose any host file
+	root, err := openConfigRoot(dataDir) // a symlink must never expose another host file
+	if err != nil {
 		return "", err
 	}
+	defer func() { _ = root.Close() }()
 
-	data, err := os.ReadFile(keyPath)
+	data, err := root.ReadFile(validatorKeyFile)
 	if err != nil {
 		return "", fmt.Errorf("read key: %w", err)
 	}
@@ -228,26 +235,27 @@ func ExportKey(dataDir string) (string, error) {
 
 // BackupKey creates a timestamped backup of the validator key.
 func BackupKey(dataDir string) error {
-	configDir := filepath.Join(dataDir, "config")
-	keyPath := filepath.Join(configDir, validatorKeyFile)
-	if err := checkConfigTarget(dataDir, keyPath); err != nil {
+	root, err := openConfigRoot(dataDir)
+	if err != nil {
 		return err
 	}
+	defer func() { _ = root.Close() }()
+	return backupKeyInRoot(root)
+}
 
-	data, err := os.ReadFile(keyPath)
+// backupKeyInRoot copies the validator key to key-backups/<name>.<timestamp>.bak.
+func backupKeyInRoot(root *os.Root) error {
+	data, err := root.ReadFile(validatorKeyFile)
 	if err != nil {
 		return fmt.Errorf("read key for backup: %w", err)
 	}
-
-	backupDir := filepath.Join(configDir, "key-backups")
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
+	if err := root.MkdirAll("key-backups", 0755); err != nil {
 		return fmt.Errorf("create backup dir: %w", err)
 	}
 
 	timestamp := time.Now().Format("20060102-150405")
-	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s.%s.bak", validatorKeyFile, timestamp))
-
-	if err := os.WriteFile(backupPath, data, 0600); err != nil {
+	backupName := fmt.Sprintf("%s.%s.bak", validatorKeyFile, timestamp)
+	if err := root.WriteFile(filepath.Join("key-backups", backupName), data, 0600); err != nil {
 		return fmt.Errorf("write backup: %w", err)
 	}
 
@@ -256,14 +264,23 @@ func BackupKey(dataDir string) error {
 
 // ListKeyBackups lists backup key files.
 func ListKeyBackups(dataDir string) ([]ConfigFile, error) {
-	backupDir := filepath.Join(dataDir, "config", "key-backups")
-	entries, err := os.ReadDir(backupDir)
+	root, err := openConfigRoot(dataDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	entries, err := readDirIn(root, "key-backups")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read backup dir: %w", err)
 	}
+
+	backupDir := filepath.Join(dataDir, "config", "key-backups")
 
 	var files []ConfigFile
 	for _, entry := range entries {

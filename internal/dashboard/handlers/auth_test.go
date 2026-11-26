@@ -388,11 +388,20 @@ func TestHandleSetupStatus_KleverOnlyIsComplete(t *testing.T) {
 func TestLastLoginMethodCannotBeRemoved(t *testing.T) {
 	handler, _ := setupAuthHandler(t)
 	handler.klever = auth.NewKleverAuthManager("klv1admin")
+	fresh, err := handler.jwt.IssueTokenPair("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove := func() int {
+		r := httptest.NewRequest(http.MethodDelete, "/api/setup/klever", nil)
+		r.AddCookie(&http.Cookie{Name: "access_token", Value: fresh.AccessToken})
+		w := httptest.NewRecorder()
+		handler.HandleKleverRemove(w, r)
+		return w.Code
+	}
 
-	w := httptest.NewRecorder()
-	handler.HandleKleverRemove(w, httptest.NewRequest(http.MethodDelete, "/api/setup/klever", nil))
-	if w.Code != http.StatusConflict {
-		t.Errorf("remove last Klever login: status = %d, want %d", w.Code, http.StatusConflict)
+	if code := remove(); code != http.StatusConflict {
+		t.Errorf("remove last Klever login: status = %d, want %d", code, http.StatusConflict)
 	}
 	if !handler.klever.HasAddress() {
 		t.Error("Klever address was removed although it was the last login method")
@@ -401,10 +410,40 @@ func TestLastLoginMethodCannotBeRemoved(t *testing.T) {
 	if _, err := handler.password.SetPassword("ownerpassword123"); err != nil { // a second login method exists, so removal is allowed
 		t.Fatalf("SetPassword: %v", err)
 	}
-	w = httptest.NewRecorder()
-	handler.HandleKleverRemove(w, httptest.NewRequest(http.MethodDelete, "/api/setup/klever", nil))
-	if w.Code != http.StatusOK {
-		t.Errorf("remove Klever with password present: status = %d, want %d", w.Code, http.StatusOK)
+	if code := remove(); code != http.StatusOK {
+		t.Errorf("remove Klever with password present: status = %d, want %d", code, http.StatusOK)
+	}
+}
+
+func TestRemovingLoginMethods_RequiresRecentLogin(t *testing.T) {
+	handler, _ := setupAuthHandler(t)
+	completeSetup(t, handler)
+	handler.klever = auth.NewKleverAuthManager("klv1admin")
+	stale, _ := handler.jwt.IssueTokenPairAuthAt("admin", time.Now().Add(-time.Hour).Unix())
+	for name, fn := range map[string]http.HandlerFunc{"delete passkey": handler.HandleDeletePasskey, "remove wallet": handler.HandleKleverRemove} {
+		r := httptest.NewRequest(http.MethodDelete, "/x", nil)
+		r.SetPathValue("id", "abc")
+		r.AddCookie(&http.Cookie{Name: "access_token", Value: stale.AccessToken})
+		w := httptest.NewRecorder()
+		fn(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s with a stale login: status %d, want 403", name, w.Code)
+		}
+	}
+	if !handler.klever.HasAddress() {
+		t.Error("wallet removed by a stale session")
+	}
+}
+
+func TestLimiterKey_GroupsIPv6By64(t *testing.T) {
+	if a, b := limiterKey("2001:db8:1:2::1"), limiterKey("2001:db8:1:2:ffff::9"); a != b {
+		t.Errorf("same /64 got different keys: %s vs %s", a, b)
+	}
+	if a, b := limiterKey("2001:db8:1:2::1"), limiterKey("2001:db8:1:3::1"); a == b {
+		t.Error("different /64 networks share a key")
+	}
+	if got := limiterKey("198.51.100.7"); got != "198.51.100.7" {
+		t.Errorf("IPv4 key changed: %s", got)
 	}
 }
 
@@ -485,5 +524,93 @@ func TestHandleRecoveryLogin_PersistsAndRateLimits(t *testing.T) {
 	}
 	if got := login(codes[1]); got != http.StatusTooManyRequests {
 		t.Errorf("after 5 failures: status %d, want %d", got, http.StatusTooManyRequests)
+	}
+}
+
+func TestEnrollment_RequiresRecentLogin(t *testing.T) {
+	handler, _ := setupAuthHandler(t)
+	completeSetup(t, handler)
+	stale, err := handler.jwt.IssueTokenPairAuthAt("admin", time.Now().Add(-time.Hour).Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := handler.jwt.IssueTokenPair("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(fn http.HandlerFunc, path, token string) (int, map[string]any) {
+		r := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{"name":"x","address":"klv1x"}`)))
+		r.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+		w := httptest.NewRecorder()
+		fn(w, r)
+		var body map[string]any
+		_ = json.NewDecoder(w.Body).Decode(&body)
+		return w.Code, body
+	}
+
+	for name, fn := range map[string]http.HandlerFunc{
+		"passkey register begin":  handler.HandlePasskeyBeginRegister,
+		"passkey register finish": handler.HandlePasskeyFinishRegister,
+		"klever setup challenge":  handler.HandleKleverSetupChallenge,
+		"klever setup":            handler.HandleKleverSetup,
+	} {
+		code, body := call(fn, "/x?session_id=s", stale.AccessToken)
+		if code != http.StatusForbidden || body["reauth"] != true {
+			t.Errorf("%s with a stale login: status %d body %v, want 403 + reauth", name, code, body)
+		}
+	}
+	if code, body := call(handler.HandlePasskeyBeginRegister, "/x", fresh.AccessToken); code != http.StatusOK {
+		t.Errorf("passkey register begin with a fresh login: status %d body %v", code, body)
+	}
+}
+
+func TestAuthTime_SurvivesRefreshAndLogoutAll(t *testing.T) {
+	handler, _ := setupAuthHandler(t)
+	completeSetup(t, handler)
+	old := time.Now().Add(-time.Hour).Unix()
+	pair, err := handler.jwt.IssueTokenPairAuthAt("admin", old)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	refreshed, err := handler.jwt.RefreshTokenPair(pair.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := handler.jwt.ValidateAccessToken(refreshed.AccessToken); c == nil || c.AuthTime != old {
+		t.Errorf("refresh changed the login time: %+v", c)
+	}
+
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/logout-all", nil)
+	r.AddCookie(&http.Cookie{Name: "access_token", Value: refreshed.AccessToken})
+	w := httptest.NewRecorder()
+	handler.HandleLogoutAll(w, r)
+	var resp map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	tok, _ := resp["access_token"].(string)
+	if c, err := handler.jwt.ValidateAccessToken(tok); err != nil || c.AuthTime != old {
+		t.Errorf("logout-all made a stale session fresh: %+v, %v", c, err)
+	}
+}
+
+func TestLoginBegin_RateLimitedPerIP(t *testing.T) {
+	handler, _ := setupAuthHandler(t)
+	start := func(ip string) int {
+		r := httptest.NewRequest(http.MethodGet, "/api/auth/klever/challenge?address=klv1x", nil)
+		r.RemoteAddr = ip + ":5000"
+		w := httptest.NewRecorder()
+		handler.HandleKleverChallenge(w, r)
+		return w.Code
+	}
+	for i := 0; i < beginsPerMinute; i++ {
+		if code := start("198.51.100.9"); code == http.StatusTooManyRequests {
+			t.Fatalf("start %d already limited", i+1)
+		}
+	}
+	if code := start("198.51.100.9"); code != http.StatusTooManyRequests {
+		t.Errorf("start %d: status %d, want 429", beginsPerMinute+1, code)
+	}
+	if code := start("203.0.113.4"); code == http.StatusTooManyRequests {
+		t.Error("another IP was limited too")
 	}
 }

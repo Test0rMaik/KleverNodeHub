@@ -29,7 +29,12 @@ func TestBackupConfigsWithVersion(t *testing.T) {
 	mustWriteFile(t, filepath.Join(configDir, "config.toml"), []byte("NodeDisplayName = \"MyNode\""))
 	mustWriteFile(t, filepath.Join(configDir, "genesis.json"), []byte("{}"))
 
-	backupDir, err := backupConfigsWithVersion(configDir, "v1.2.3")
+	root, err := openConfigRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	backupDir, err := backupConfigsWithVersion(root, configDir, "v1.2.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +102,12 @@ func TestReadUserValues(t *testing.T) {
 `
 	mustWriteFile(t, filepath.Join(configDir, "config.toml"), []byte(content))
 
-	values := readUserValues(configDir)
+	root, err := openConfigRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	values := readUserValues(root)
 	if values["NodeDisplayName"] != "Validator-1" {
 		t.Errorf("expected NodeDisplayName=Validator-1, got %q", values["NodeDisplayName"])
 	}

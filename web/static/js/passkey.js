@@ -16,7 +16,9 @@ const Passkey = {
         // Begin registration — get challenge from server
         const beginResp = await API.postJSON('/api/auth/passkey/register/begin', { name });
         if (!beginResp || !beginResp.ok) {
-            throw new Error(beginResp?.data?.error || 'Failed to begin registration');
+            const err = new Error(beginResp?.data?.error || 'Failed to begin registration');
+            err.reauth = beginResp?.data?.reauth === true;
+            throw err;
         }
 
         const { options, session_id } = beginResp.data;
@@ -53,7 +55,9 @@ const Passkey = {
         );
 
         if (!finishResp || !finishResp.ok) {
-            throw new Error(finishResp?.data?.error || 'Failed to finish registration');
+            const err = new Error(finishResp?.data?.error || 'Failed to finish registration');
+            err.reauth = finishResp?.data?.reauth === true;
+            throw err;
         }
 
         return finishResp.data;

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -44,16 +45,21 @@ type ConfigUpgradeResult struct {
 //  4. Merge config.toml: new defaults + preserved user values
 func UpgradeConfigs(ctx context.Context, dataDir, network, versionLabel string) (*ConfigUpgradeResult, error) {
 	configDir := filepath.Join(dataDir, "config")
-	if _, err := os.Stat(configDir); os.IsNotExist(err) {
-		return nil, fmt.Errorf("config directory does not exist: %s", configDir)
+	cfgRoot, err := openConfigRoot(dataDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("config directory does not exist: %s", configDir)
+		}
+		return nil, err
 	}
+	defer func() { _ = cfgRoot.Close() }()
 
 	result := &ConfigUpgradeResult{
 		BackupVersion: versionLabel,
 	}
 
 	// Step 1: Backup current configs with version label
-	backupDir, err := backupConfigsWithVersion(configDir, versionLabel)
+	backupDir, err := backupConfigsWithVersion(cfgRoot, configDir, versionLabel)
 	if err != nil {
 		return nil, fmt.Errorf("backup configs: %w", err)
 	}
@@ -61,7 +67,7 @@ func UpgradeConfigs(ctx context.Context, dataDir, network, versionLabel string) 
 	log.Printf("config upgrade: backed up to %s", backupDir)
 
 	// Step 2: Read user values from config.toml before overwrite
-	userValues := readUserValues(configDir)
+	userValues := readUserValues(cfgRoot)
 
 	// Step 3: Download new configs to a temp dir first
 	tmpDir, err := os.MkdirTemp("", "klever-config-upgrade-*")
@@ -79,7 +85,6 @@ func UpgradeConfigs(ctx context.Context, dataDir, network, versionLabel string) 
 	// Step 4: Replace system configs
 	for _, fileName := range systemConfigFiles {
 		srcPath := filepath.Join(tmpDir, fileName)
-		dstPath := filepath.Join(configDir, fileName)
 
 		srcData, err := os.ReadFile(srcPath)
 		if err != nil {
@@ -88,10 +93,7 @@ func UpgradeConfigs(ctx context.Context, dataDir, network, versionLabel string) 
 			continue
 		}
 
-		if err := checkConfigTarget(dataDir, dstPath); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(dstPath, srcData, 0644); err != nil {
+		if err := cfgRoot.WriteFile(fileName, srcData, 0644); err != nil {
 			return nil, fmt.Errorf("replace %s: %w", fileName, err)
 		}
 		result.ReplacedFiles = append(result.ReplacedFiles, fileName)
@@ -100,7 +102,6 @@ func UpgradeConfigs(ctx context.Context, dataDir, network, versionLabel string) 
 	// Step 5: Merge config.toml — new defaults + user values
 	for _, fileName := range userConfigFiles {
 		srcPath := filepath.Join(tmpDir, fileName)
-		dstPath := filepath.Join(configDir, fileName)
 
 		newData, err := os.ReadFile(srcPath)
 		if err != nil {
@@ -116,10 +117,7 @@ func UpgradeConfigs(ctx context.Context, dataDir, network, versionLabel string) 
 			content = replaceConfigValue(content, key, value)
 		}
 
-		if err := checkConfigTarget(dataDir, dstPath); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(dstPath, []byte(content), 0644); err != nil {
+		if err := cfgRoot.WriteFile(fileName, []byte(content), 0644); err != nil {
 			return nil, fmt.Errorf("merge %s: %w", fileName, err)
 		}
 		result.MergedFiles = append(result.MergedFiles, fileName)
@@ -133,17 +131,18 @@ func UpgradeConfigs(ctx context.Context, dataDir, network, versionLabel string) 
 
 // backupConfigsWithVersion creates a versioned backup of all config files.
 // Backup dir: <dataDir>/config/backups/<versionLabel>-<timestamp>/
-func backupConfigsWithVersion(configDir, versionLabel string) (string, error) {
+func backupConfigsWithVersion(root *os.Root, configDir, versionLabel string) (string, error) {
 	timestamp := time.Now().Format("20060102-150405")
 	safeVersion := sanitizeVersionLabel(versionLabel)
 	backupName := fmt.Sprintf("%s-%s", safeVersion, timestamp)
 	backupDir := filepath.Join(configDir, "backups", backupName)
+	rel := filepath.Join("backups", backupName)
 
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
+	if err := root.MkdirAll(rel, 0755); err != nil {
 		return "", fmt.Errorf("create backup dir: %w", err)
 	}
 
-	entries, err := os.ReadDir(configDir)
+	entries, err := readDirIn(root, ".")
 	if err != nil {
 		return "", fmt.Errorf("read config dir: %w", err)
 	}
@@ -155,12 +154,11 @@ func backupConfigsWithVersion(configDir, versionLabel string) (string, error) {
 		if !entry.Type().IsRegular() {
 			continue
 		}
-		srcPath := filepath.Join(configDir, entry.Name())
-		data, err := os.ReadFile(srcPath)
+		data, err := root.ReadFile(entry.Name())
 		if err != nil {
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(backupDir, entry.Name()), data, 0644); err != nil {
+		if err := root.WriteFile(filepath.Join(rel, entry.Name()), data, 0644); err != nil {
 			return "", fmt.Errorf("backup %s: %w", entry.Name(), err)
 		}
 	}
@@ -180,11 +178,10 @@ func sanitizeVersionLabel(label string) string {
 
 // readUserValues extracts user-specific TOML values from config.toml.
 // These are the values that must be preserved across config upgrades.
-func readUserValues(configDir string) map[string]string {
+func readUserValues(root *os.Root) map[string]string {
 	values := make(map[string]string)
 
-	configPath := filepath.Join(configDir, "config.toml")
-	data, err := os.ReadFile(configPath)
+	data, err := root.ReadFile("config.toml")
 	if err != nil {
 		return values
 	}
@@ -256,10 +253,17 @@ func downloadNewConfigs(ctx context.Context, network, tmpDir string) (string, er
 
 // ListConfigVersionBackups lists all version-labeled config backups.
 func ListConfigVersionBackups(dataDir string) ([]ConfigVersionBackup, error) {
-	backupDir := filepath.Join(dataDir, "config", "backups")
-	entries, err := os.ReadDir(backupDir)
+	root, err := openConfigRoot(dataDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	entries, err := readDirIn(root, "backups")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read backup dir: %w", err)
@@ -278,7 +282,7 @@ func ListConfigVersionBackups(dataDir string) ([]ConfigVersionBackup, error) {
 		}
 
 		// Count files in backup
-		files, _ := os.ReadDir(filepath.Join(backupDir, entry.Name()))
+		files, _ := readDirIn(root, filepath.Join("backups", entry.Name()))
 		fileCount := 0
 		for _, f := range files {
 			if !f.IsDir() {
@@ -341,23 +345,24 @@ func RestoreConfigVersion(dataDir, backupName string) error {
 		return err
 	}
 	configDir := filepath.Join(dataDir, "config")
-	backupDir := filepath.Join(configDir, "backups", backupName)
+	rel := filepath.Join("backups", backupName)
 
-	if _, err := os.Stat(backupDir); os.IsNotExist(err) {
+	root, err := openConfigRoot(dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
+	if _, err := root.Stat(rel); errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("backup not found: %s", backupName)
 	}
 
-	// Validate path (and that the backup dir itself is no symlink)
-	if err := checkConfigTarget(dataDir, backupDir); err != nil {
-		return err
-	}
-
 	// Backup current before restoring
-	if _, err := backupConfigsWithVersion(configDir, "pre-restore"); err != nil {
+	if _, err := backupConfigsWithVersion(root, configDir, "pre-restore"); err != nil {
 		return fmt.Errorf("pre-restore backup: %w", err)
 	}
 
-	entries, err := os.ReadDir(backupDir)
+	entries, err := readDirIn(root, rel)
 	if err != nil {
 		return fmt.Errorf("read backup: %w", err)
 	}
@@ -367,14 +372,11 @@ func RestoreConfigVersion(dataDir, backupName string) error {
 		if !entry.Type().IsRegular() { // skip dirs and symlinks
 			continue
 		}
-		if err := checkConfigTarget(dataDir, filepath.Join(configDir, entry.Name())); err != nil {
-			return err
-		}
-		data, err := os.ReadFile(filepath.Join(backupDir, entry.Name()))
+		data, err := root.ReadFile(filepath.Join(rel, entry.Name()))
 		if err != nil {
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(configDir, entry.Name()), data, 0644); err != nil {
+		if err := root.WriteFile(entry.Name(), data, 0644); err != nil {
 			return fmt.Errorf("restore %s: %w", entry.Name(), err)
 		}
 		restored++

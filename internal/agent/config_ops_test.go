@@ -300,3 +300,40 @@ func TestConfigOps_RefuseSymlinks(t *testing.T) {
 		t.Error("file created through symlink")
 	}
 }
+
+// The node container can write into config/: a validatorKey.pem or a
+// key-backups dir swapped for a symlink must never lead out of config/.
+func TestKeyOps_SymlinkOutOfConfigRefused(t *testing.T) {
+	dataDir := t.TempDir()
+	outside := t.TempDir()
+	cfg := filepath.Join(dataDir, "config")
+	if err := os.MkdirAll(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(outside, "shadow")
+	if err := os.WriteFile(secret, []byte("host secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(cfg, validatorKeyFile)); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if out, err := ExportKey(dataDir); err == nil || strings.Contains(out, "host secret") {
+		t.Errorf("key.export followed a symlink out of config/: %q, %v", out, err)
+	}
+
+	if err := os.Remove(filepath.Join(cfg, validatorKeyFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, validatorKeyFile), []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(cfg, "key-backups")); err != nil {
+		t.Fatal(err)
+	}
+	if err := BackupKey(dataDir); err == nil {
+		t.Error("key backup written through a symlinked key-backups dir")
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 1 {
+		t.Errorf("files appeared outside config/: %v", entries)
+	}
+}

@@ -29,7 +29,13 @@ type BackupHandler struct {
 	caDir    string
 	password *auth.PasswordManager
 	limiter  *auth.RateLimiter
+	// recentAuth reports whether the caller logged in recently; required for
+	// an export on hubs without a password (see HandleExport).
+	recentAuth func(*http.Request) bool
 }
+
+// SetRecentAuthCheck sets the recent-login check used for passwordless hubs.
+func (h *BackupHandler) SetRecentAuthCheck(fn func(*http.Request) bool) { h.recentAuth = fn }
 
 // NewBackupHandler creates a BackupHandler. password/limiter implement the
 // fresh re-authentication required before a backup is handed out.
@@ -62,6 +68,15 @@ func (h *BackupHandler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := extractIP(r)
+	// Without a password to re-check, a recent login stands in for it: the
+	// backup holds every secret of the hub, so an old session must not get it.
+	if (h.password == nil || !h.password.HasPassword()) && h.recentAuth != nil && !h.recentAuth(r) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error":  "for security, log in again before exporting a backup (your last login is older than 15 minutes)",
+			"reauth": true,
+		})
+		return
+	}
 	if h.password != nil && h.password.HasPassword() {
 		if h.limiter != nil && !h.limiter.Allow(ip) {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many failed attempts, try again later"})

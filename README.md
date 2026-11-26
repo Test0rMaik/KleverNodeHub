@@ -57,6 +57,8 @@ Export the whole hub as **one passphrase-encrypted file** and restore it on anot
 - **No downgrades** — the release version is signed with the checksums; agents refuse older releases.
 - **Setup token** — a fresh hub prints a one-time token to its log; the setup wizard needs it, so nobody else can claim a new install.
 - **Sessions end on credential changes** — password change, passkey deletion and *Log Out All Other Sessions* rotate the session key.
+- **Recent login for new login methods** (knh.7) — adding a passkey, password or wallet needs a login within the last 15 minutes; a stolen session cannot add its own passkey.
+- **Kernel-confined agent file access** (knh.7) — config and key operations run through `os.Root`, so no symlink can redirect them out of the node's `config/` directory.
 
 #### If your hub was exposed (before knh.6)
 Anyone could add a passkey before knh.6. Look in Settings → Passkeys for entries you didn't create and in your proxy log for `passkey/register/finish` answered with `200`. If you find one, assume the attacker had full admin access, including validator key export (`key.export`) and agent updates: rebuild the affected servers, rotate validator keys, and set up a **fresh** hub (new data dir, no backup import — backups contain the same secrets), then re-register the agents.
@@ -292,6 +294,8 @@ docker run -d \
   --dashboard-url https://<DASHBOARD_IP>:9443 --register-token <YOUR_TOKEN>
 ```
 
+The token is used up on the first start. Since knh.7 a token in the start command means "register again": if that fails because the token is spent, the agent logs a warning and keeps its existing registration, so restarts keep working, but remove the token from the container's command once it is registered.
+
 #### Alternative: Manual binary
 
 ```bash
@@ -313,6 +317,7 @@ After registration, the agent stores its mTLS certificate locally and reconnects
 | `--dashboard-url` | — | Dashboard URL for registration |
 | `--register-token` | — | One-time registration token |
 | `--ca-fingerprint` | — | SHA-256 of the dashboard CA (from the install command). Required when registering against a dashboard without a publicly trusted certificate |
+| `--register-only` | — | With `--register-token`: register, save the config and exit (the installer uses this). A token always replaces an existing registration; the old `agent.json` is kept as `agent.json.bak-<time>` |
 | `--docker-socket` | `/var/run/docker.sock` | Docker socket path |
 
 ## Project Structure

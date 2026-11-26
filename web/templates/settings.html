@@ -388,8 +388,9 @@
                 });
                 if (!resp) return;
                 if (!resp.ok) {
-                    let msg = 'Backup failed';
-                    try { msg = (await resp.json()).error || msg; } catch (e) {}
+                    let msg = 'Backup failed', reauth = false;
+                    try { const d = await resp.json(); msg = d.error || msg; reauth = d.reauth === true; } catch (e) {}
+                    if (reauth) { await offerReauth(msg); return; }
                     showStatus(msg, true, true);
                     return;
                 }
@@ -718,6 +719,7 @@
             try {
                 // Step 1: Get challenge from server
                 const challengeResp = await API.postJSON('/api/setup/klever/challenge', { address: address });
+                if (challengeResp?.data?.reauth) { await offerReauth(challengeResp.data.error); return; }
                 if (!challengeResp || !challengeResp.ok) {
                     showStatus('Error: ' + (challengeResp?.data?.error || 'failed to get challenge'), true);
                     return;
@@ -737,6 +739,8 @@
                 if (resp && resp.ok) {
                     showStatus('Klever wallet linked (ownership verified)');
                     await loadKleverStatus();
+                } else if (resp?.data?.reauth) {
+                    await offerReauth(resp.data.error);
                 } else {
                     showStatus('Error: ' + (resp?.data?.error || 'verification failed'), true);
                 }
@@ -762,7 +766,9 @@
                 showStatus('Klever wallet unlinked');
                 await loadKleverStatus();
             } else {
-                showStatus('Error unlinking wallet', true);
+                const data = resp ? await resp.json().catch(() => ({})) : {};
+                if (data.reauth) { await offerReauth(data.error); return; }
+                showStatus('Error unlinking wallet' + (data.error ? ': ' + data.error : ''), true);
             }
         }
 
@@ -789,6 +795,15 @@
             } else {
                 const data = resp ? await resp.json() : {};
                 showStatus('Error: ' + (data.error || 'failed to change password'), true);
+            }
+        }
+
+        // Adding a login method needs a recent login: offer to log in again.
+        async function offerReauth(message) {
+            if (confirm(message + '\n\nLog out and log in again now?')) {
+                await API.logout();
+            } else {
+                showStatus(message, true);
             }
         }
 
@@ -871,6 +886,7 @@
                 showStatus('Passkey "' + name + '" registered successfully');
                 await loadPasskeys();
             } catch (err) {
+                if (err.reauth) { await offerReauth(err.message); return; }
                 showStatus('Registration failed: ' + err.message, true);
             }
         }
@@ -884,6 +900,7 @@
                 await loadPasskeys();
             } else {
                 const data = resp ? await resp.json() : {};
+                if (data.reauth) { await offerReauth(data.error); return; }
                 showStatus('Error: ' + (data.error || 'failed to delete'), true);
             }
         }

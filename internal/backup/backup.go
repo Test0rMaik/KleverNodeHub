@@ -106,6 +106,10 @@ func Export(db *store.DB, caDir, passphrase string, opts ExportOptions, w io.Wri
 			return nil, err
 		}
 	}
+	if err := stripSecrets(snap); err != nil {
+		_ = snap.Close()
+		return nil, err
+	}
 	servers, nodes, err := snap.Counts()
 	if err != nil {
 		_ = snap.Close()
@@ -166,6 +170,20 @@ func Export(db *store.DB, caDir, passphrase string, opts ExportOptions, w io.Wri
 		return nil, err
 	}
 	return m, nil
+}
+
+// stripSecrets removes from an export snapshot what must never leave the hub:
+// the session signing key (a restore regenerates it anyway, and whoever holds
+// it can mint sessions with any login time). secure_delete overwrites the row
+// instead of leaving it readable in a free page of the file.
+func stripSecrets(snap *store.DB) error {
+	if _, err := snap.SQL().Exec("PRAGMA secure_delete = ON"); err != nil {
+		return fmt.Errorf("snapshot secure_delete: %w", err)
+	}
+	if err := store.NewSettingsStore(snap).Delete("jwt_signing_key"); err != nil {
+		return fmt.Errorf("strip signing key: %w", err)
+	}
+	return nil
 }
 
 func addBytes(tw *tar.Writer, name string, data []byte, mode int64) error {
