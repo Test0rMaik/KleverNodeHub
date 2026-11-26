@@ -24,10 +24,15 @@ import (
 // key exists only as the RELEASE_SIGNING_KEY secret of the release workflow.
 const PublicKeyHex = "816dd6ccbf7e03bdf54e72fa38e2837ec05655605d828f16eed788f198a4a134"
 
-// ChecksumsFile and SignatureFile are the release asset names.
+// ChecksumsFile and SignatureFile are the release asset names (the same as
+// upstream since v0.3.89, so its bridge release can read ours). The signature
+// name must not contain "checksums": dashboards up to v0.3.88 take the first
+// asset whose name does as their checksum file when they self-update.
+// LegacySignatureFile is what knh.6/knh.7 hubs look for; CI publishes both.
 const (
-	ChecksumsFile = "checksums.txt"
-	SignatureFile = "checksums.txt.sig"
+	ChecksumsFile       = "checksums.txt"
+	SignatureFile       = "release.sig"
+	LegacySignatureFile = "checksums.txt.sig"
 )
 
 // ErrUnsigned means there is no signature to check against.

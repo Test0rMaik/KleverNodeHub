@@ -599,13 +599,24 @@ func limitBody(h http.HandlerFunc) http.HandlerFunc {
 
 // loadOrCreateJWTKey loads the JWT signing key from the settings store,
 // or generates a new one on first run.
+// jwtKeyRotatedSetting marks that the signing key was replaced after the
+// 2026-11 security releases. Same name as upstream v0.3.89+, so a hub that
+// already rotated there does not rotate again when it moves to this fork.
+const jwtKeyRotatedSetting = "jwt_signing_key_rotated"
+
 func loadOrCreateJWTKey(settings *store.SettingsStore) ([]byte, error) {
 	keyHex, err := settings.Get("jwt_signing_key")
 	if err != nil {
 		return nil, fmt.Errorf("read JWT key: %w", err)
 	}
+	// A key from before the security releases may have been read through the
+	// settings API (knh.5 and older) and is replaced once, ending all sessions.
+	rotated, err := settings.Get(jwtKeyRotatedSetting)
+	if err != nil {
+		return nil, fmt.Errorf("read JWT key state: %w", err)
+	}
 
-	if keyHex != "" {
+	if keyHex != "" && rotated != "" {
 		key, err := hex.DecodeString(keyHex)
 		if err != nil {
 			return nil, fmt.Errorf("decode JWT key: %w", err)
@@ -621,7 +632,14 @@ func loadOrCreateJWTKey(settings *store.SettingsStore) ([]byte, error) {
 	if err := settings.Set("jwt_signing_key", hex.EncodeToString(key)); err != nil {
 		return nil, fmt.Errorf("save JWT key: %w", err)
 	}
-	log.Println("generated new JWT signing key")
+	if err := settings.Set(jwtKeyRotatedSetting, "1"); err != nil {
+		return nil, fmt.Errorf("save JWT key state: %w", err)
+	}
+	if keyHex != "" {
+		log.Println("JWT signing key replaced after the security update: all sessions were ended, please log in again")
+	} else {
+		log.Println("generated new JWT signing key")
+	}
 	return key, nil
 }
 

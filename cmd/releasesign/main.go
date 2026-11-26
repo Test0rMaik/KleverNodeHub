@@ -1,7 +1,8 @@
 // Command releasesign creates the release signing key and signs checksums.txt.
 //
 //	releasesign keygen <private-key-file>   write a new key (0600), print the public key
-//	releasesign sign <checksums.txt>        sign with $RELEASE_SIGNING_KEY, write <file>.sig
+//	releasesign sign <checksums.txt>        sign with $RELEASE_SIGNING_KEY, write release.sig
+//	                                        (and checksums.txt.sig for knh.6/knh.7 hubs) next to it
 //
 // The private key is the base64 of the 32-byte Ed25519 seed. It belongs only in
 // the RELEASE_SIGNING_KEY secret of the release workflow; the printed public
@@ -16,6 +17,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/CTJaeger/KleverNodeHub/internal/release"
@@ -85,5 +87,11 @@ func sign(path string) error {
 	if err := release.VerifyChecksums(data, []byte(sig)); err != nil {
 		return fmt.Errorf("signature does not verify against internal/release.PublicKeyHex: %w", err)
 	}
-	return os.WriteFile(path+".sig", []byte(sig+"\n"), 0o644)
+	dir := filepath.Dir(path)
+	for _, name := range []string{release.SignatureFile, release.LegacySignatureFile} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(sig+"\n"), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }

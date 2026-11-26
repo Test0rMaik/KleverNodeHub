@@ -167,9 +167,11 @@ verify_release() {
     dir=$(mktemp -d)
     trap 'rm -rf "$dir"' RETURN
     curl -fsSL -o "$dir/checksums.txt" "${base}/checksums.txt" || error "Failed to download release checksums"
-    curl -fsSL -o "$dir/checksums.txt.sig" "${base}/checksums.txt.sig" || error "Release is not signed (no checksums.txt.sig)"
+    curl -fsSL -o "$dir/release.sig" "${base}/release.sig" \
+        || curl -fsSL -o "$dir/release.sig" "${base}/checksums.txt.sig" \
+        || error "Release is not signed (no release.sig)"
     printf -- '-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n' "$RELEASE_PUBKEY_B64" > "$dir/release.pub"
-    base64 -d "$dir/checksums.txt.sig" > "$dir/sig.bin" 2>/dev/null || error "Malformed release signature"
+    base64 -d "$dir/release.sig" > "$dir/sig.bin" 2>/dev/null || error "Malformed release signature"
     openssl pkeyutl -verify -pubin -inkey "$dir/release.pub" -rawin \
         -in "$dir/checksums.txt" -sigfile "$dir/sig.bin" &>/dev/null \
         || error "Release signature verification FAILED — not installing"

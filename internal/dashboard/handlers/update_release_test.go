@@ -52,13 +52,13 @@ func TestFetchSignedChecksums(t *testing.T) {
 	sums := []byte("abc123  klever-agent-linux-amd64\n# release good\n")
 	goodSig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, sums))
 	files := map[string]string{
-		"/good/checksums.txt":        string(sums),
-		"/good/checksums.txt.sig":    goodSig,
-		"/unsigned/checksums.txt":    string(sums),
-		"/forged/checksums.txt":      "evil999  klever-agent-linux-amd64\n",
-		"/forged/checksums.txt.sig":  goodSig,
-		"/renamed/checksums.txt":     string(sums), // validly signed, but for release "good"
-		"/renamed/checksums.txt.sig": goodSig,
+		"/good/checksums.txt":     string(sums),
+		"/good/release.sig":       goodSig,
+		"/unsigned/checksums.txt": string(sums),
+		"/forged/checksums.txt":   "evil999  klever-agent-linux-amd64\n",
+		"/forged/release.sig":     goodSig,
+		"/renamed/checksums.txt":  string(sums), // validly signed, but for release "good"
+		"/renamed/release.sig":    goodSig,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for name, body := range files {
