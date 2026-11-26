@@ -25,7 +25,11 @@ func fakeDashboard(t *testing.T, status int, serverID string) (url, fingerprint 
 		t.Fatal(err)
 	}
 	cfg.ClientAuth = tls.RequestClientCert
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/agent/ca" { // agents fetch the CA here since the TLS chain is leaf-only
+			_, _ = w.Write(ca.CertPEM)
+			return
+		}
 		if status != http.StatusOK {
 			http.Error(w, "invalid token", status)
 			return
