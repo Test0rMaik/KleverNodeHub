@@ -1,10 +1,16 @@
 package handlers
 
 import (
-	"errors"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
+
+	"github.com/CTJaeger/KleverNodeHub/internal/release"
 )
 
 func TestValidReleaseURL(t *testing.T) {
@@ -29,26 +35,68 @@ func TestValidReleaseURL(t *testing.T) {
 	}
 }
 
-func TestVerifyAgentChecksum(t *testing.T) {
+// rewriteTransport sends every request to the test server, keeping the path.
+type rewriteTransport struct{ target string }
+
+func (rt rewriteTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	u, _ := url.Parse(rt.target)
+	r2 := r.Clone(r.Context())
+	r2.URL.Scheme, r2.URL.Host = u.Scheme, u.Host
+	return http.DefaultTransport.RoundTrip(r2)
+}
+
+func TestFetchSignedChecksums(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	defer release.SwapPublicKeyForTest(pub)()
+
+	sums := []byte("abc123  klever-agent-linux-amd64\n# release good\n")
+	goodSig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, sums))
+	files := map[string]string{
+		"/good/checksums.txt":        string(sums),
+		"/good/checksums.txt.sig":    goodSig,
+		"/unsigned/checksums.txt":    string(sums),
+		"/forged/checksums.txt":      "evil999  klever-agent-linux-amd64\n",
+		"/forged/checksums.txt.sig":  goodSig,
+		"/renamed/checksums.txt":     string(sums), // validly signed, but for release "good"
+		"/renamed/checksums.txt.sig": goodSig,
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/missing" {
-			http.NotFound(w, r)
-			return
+		for name, body := range files {
+			if strings.HasSuffix(r.URL.Path, name) {
+				_, _ = w.Write([]byte(body))
+				return
+			}
 		}
-		_, _ = w.Write([]byte("abc123  klever-agent-linux-amd64\n"))
+		http.NotFound(w, r)
 	}))
 	defer srv.Close()
+	client := &http.Client{Transport: rewriteTransport{srv.URL}}
 
-	if err := verifyAgentChecksum(srv.Client(), srv.URL+"/ok", "klever-agent-linux-amd64", "abc123"); err != nil {
-		t.Fatalf("matching checksum rejected: %v", err)
+	got, _, err := fetchSignedChecksums(client, "good")
+	if err != nil || string(got) != string(sums) {
+		t.Fatalf("signed release rejected: %v", err)
 	}
-	err := verifyAgentChecksum(srv.Client(), srv.URL+"/ok", "klever-agent-linux-amd64", "deadbeef")
-	if err == nil || isUnavailable(err) {
-		t.Fatalf("mismatch must be a hard error, got %v", err)
+	if _, _, err := fetchSignedChecksums(client, "unsigned"); err == nil {
+		t.Error("release without signature accepted")
 	}
-	if err := verifyAgentChecksum(srv.Client(), srv.URL+"/missing", "x", "y"); !isUnavailable(err) {
-		t.Fatalf("missing checksums file should be 'unavailable', got %v", err)
+	if _, _, err := fetchSignedChecksums(client, "forged"); err == nil {
+		t.Error("checksums not matching the signature accepted")
+	}
+	if _, _, err := fetchSignedChecksums(client, "renamed"); err == nil {
+		t.Error("signed checksums of another release accepted under a new tag")
+	}
+	if _, _, err := fetchSignedChecksums(client, "../x"); err == nil {
+		t.Error("path-like tag accepted")
 	}
 }
 
-func isUnavailable(err error) bool { return err != nil && errors.Is(err, errChecksumUnavailable) }
+func TestUnsignedSourcesDisabledByDefault(t *testing.T) {
+	h := &UpdateHandler{}
+	for name, fn := range map[string]http.HandlerFunc{"upload": h.HandleUploadBinary, "custom": h.HandleDownloadCustom} {
+		w := httptest.NewRecorder()
+		fn(w, httptest.NewRequest(http.MethodPost, "/", nil))
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want %d", name, w.Code, http.StatusForbidden)
+		}
+	}
+}

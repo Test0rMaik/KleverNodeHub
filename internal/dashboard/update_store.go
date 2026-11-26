@@ -22,7 +22,17 @@ type AgentBinaryInfo struct {
 	Arch       string `json:"arch"` // e.g. "amd64"
 	UploadedAt int64  `json:"uploaded_at"`
 	FilePath   string `json:"-"` // internal, not serialized to API
+
+	// Release provenance: the signed checksums.txt this binary was verified
+	// against, passed on to agents so they can verify it themselves. Empty for
+	// uploads and custom-URL downloads, which agents refuse by default.
+	Asset     string `json:"asset,omitempty"`
+	Checksums string `json:"release_checksums,omitempty"`
+	Signature string `json:"release_signature,omitempty"`
 }
+
+// Signed reports whether the binary came from a signed release.
+func (i *AgentBinaryInfo) Signed() bool { return i.Signature != "" }
 
 // UpdateStore manages uploaded agent binaries.
 type UpdateStore struct {
@@ -41,8 +51,18 @@ func NewUpdateStore(dataDir string) *UpdateStore {
 	return s
 }
 
-// Store saves an agent binary to disk and records its metadata.
+// Store saves an unsigned agent binary (upload or custom URL).
 func (s *UpdateStore) Store(version, osName, arch string, data []byte) (*AgentBinaryInfo, error) {
+	return s.store(version, osName, arch, data, "", nil, nil)
+}
+
+// StoreRelease saves an agent binary already verified against the signed
+// release checksums, keeping the checksums and signature for the agents.
+func (s *UpdateStore) StoreRelease(version, osName, arch string, data []byte, asset string, checksums, sig []byte) (*AgentBinaryInfo, error) {
+	return s.store(version, osName, arch, data, asset, checksums, sig)
+}
+
+func (s *UpdateStore) store(version, osName, arch string, data []byte, asset string, checksums, sig []byte) (*AgentBinaryInfo, error) {
 	// version/os/arch become part of the on-disk filename, so reject anything
 	// that could escape the storage directory (path traversal).
 	for _, p := range []string{version, osName, arch} {
@@ -74,6 +94,9 @@ func (s *UpdateStore) Store(version, osName, arch string, data []byte) (*AgentBi
 		Arch:       arch,
 		UploadedAt: time.Now().Unix(),
 		FilePath:   filePath,
+		Asset:      asset,
+		Checksums:  string(checksums),
+		Signature:  strings.TrimSpace(string(sig)),
 	}
 
 	key := version + "/" + osName + "/" + arch

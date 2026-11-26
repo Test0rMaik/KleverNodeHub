@@ -47,11 +47,23 @@ Export the whole hub as **one passphrase-encrypted file** and restore it on anot
 
 ### Fork Release Channel & Signed Agent Auth
 - **Update notifications follow this fork** — the update banner, dashboard self-update and agent updates use this repo's GitHub releases (built by CI on `v*-knh.*` tags), never upstream builds.
-- **Signed agent connections** — agents prove ownership of their private key on every WebSocket connect (replay-protected); a guessed server ID is no longer enough to impersonate an agent. Set `require_signed_agent_auth=true` once all agents are updated.
+- **Signed agent connections** — agents prove ownership of their private key on every WebSocket connect (replay-protected); a guessed server ID is no longer enough to impersonate an agent. Required by default since knh.6 (`require_signed_agent_auth=false` re-allows pre-knh.2 agents).
+
+### Signed Releases & Hardened Hub (knh.6)
+- **Agents only install signed releases** — CI signs each release's `checksums.txt` with an Ed25519 key whose public half is compiled into hub and agent. An agent verifies every update itself and refuses anything else, so a hijacked hub cannot push code to your servers. The hub's self-update and `install-agent.sh` check the same signature.
+- **Custom agent builds are opt-in twice** — start the hub with `--allow-unsigned-agent-binaries` to enable upload / custom URL, **and** set `"allow_unsigned_updates": true` in `agent.json` on each server that should accept them.
+- **Pinned registration** — the install command carries the hub's CA fingerprint; agents never send their token to an impostor.
+- **Agent path guard** — agents refuse hub-supplied data directories in system locations (also via symlinks), config/key operations take plain file names only; `"allowed_data_roots": ["/opt/klever"]` in `agent.json` restricts them further.
+- **No downgrades** — the release version is signed with the checksums; agents refuse older releases.
+- **Setup token** — a fresh hub prints a one-time token to its log; the setup wizard needs it, so nobody else can claim a new install.
+- **Sessions end on credential changes** — password change, passkey deletion and *Log Out All Other Sessions* rotate the session key.
+
+#### If your hub was exposed (before knh.6)
+Anyone could add a passkey before knh.6. Look in Settings → Passkeys for entries you didn't create and in your proxy log for `passkey/register/finish` answered with `200`. If you find one, assume the attacker had full admin access, including validator key export (`key.export`) and agent updates: rebuild the affected servers, rotate validator keys, and set up a **fresh** hub (new data dir, no backup import — backups contain the same secrets), then re-register the agents.
 
 ### Local Docker (build from source)
 Run the fork's dashboard in Docker straight from a checkout — no registry image needed (the fork publishes none):
-- `make docker-up` builds `klever-node-hub:local` (version stamped from `git describe`) and starts it on `https://localhost:9443`; `make docker-logs` shows the first-start recovery codes; `make docker-down` stops it.
+- `make docker-up` builds `klever-node-hub:local` (version stamped from `git describe`) and starts it on `https://localhost:9443`; `make docker-logs` shows the setup token for the first-run wizard (recovery codes are in `/root/.klever-node-hub/recovery-codes.txt` inside the container); `make docker-down` stops it.
 - `make docker-import BACKUP=hub.knhbak` restores a backup into the volume; `make docker-compact` shrinks the database.
 - Data lives in the `klever-data` volume and survives rebuilds; to update, pull the repo and run `make docker-up` again. Override with `KNH_DOMAIN` / `KNH_PORT`; `KNH_BIND=127.0.0.1` keeps it local-only (Docker-published ports bypass ufw).
 - The Docker socket is not mounted (Docker self-update is disabled in the fork). If your kernel lacks the iptables `raw` table (Docker 28+ bridge networking fails with *Unable to enable DIRECT ACCESS FILTERING*), add a local `docker-compose.override.yml` with `network_mode: host` (and `build.network: host`, `ports: !reset []`).
@@ -223,7 +235,7 @@ docker run -d \
 
 > **One-click updates:** Mounting `/var/run/docker.sock` lets the dashboard pull a new image and recreate its own container when you click **Update Now** in the update banner. Leave the mount off if you'd rather update manually with `docker pull` + `docker run` — the dashboard will then just show the `docker pull` command instead of the button. The socket grants root-equivalent control of the Docker daemon, so only mount it if you trust the dashboard accordingly.
 
-On first access (`https://your-server:9443`), a setup wizard will guide you through setting a password and optionally registering a Passkey. Recovery codes are printed to the log on first run.
+On first access (`https://your-server:9443`), a setup wizard will guide you through setting a password and optionally registering a Passkey. The wizard asks for the **setup token** printed to the dashboard log at startup (`journalctl -u klever-node-hub` / `docker logs`). Initial recovery codes are written to `<data-dir>/recovery-codes.txt` — store them safely and delete the file.
 
 > **Trusted HTTPS / PWA:** The dashboard uses a self-signed certificate by default. To get a trusted certificate (required for mobile PWA install), place a reverse proxy with Let's Encrypt in front of it. See the **[Reverse Proxy Setup Guide](docs/reverse-proxy.md)** for Apache, Nginx, and Caddy configurations.
 
@@ -237,6 +249,8 @@ On first access (`https://your-server:9443`), a setup wizard will guide you thro
 | `--domain` | `localhost` | Domain for WebAuthn RP ID and TLS (optional, only needed for Passkey login) |
 | `--data-dir` | `~/.klever-node-hub` | Data directory for DB, certs, config |
 | `--reset-recovery-codes` | — | Generate new recovery codes and exit |
+| `--allow-unsigned-agent-binaries` | off | Enable agent binary upload and the custom agent update URL. Agents still refuse these builds unless their `agent.json` has `"allow_unsigned_updates": true` |
+| `--trusted-proxy` | — | Comma-separated CIDRs of reverse proxies (besides loopback) whose `X-Forwarded-For` is trusted for login rate limiting, e.g. the Docker bridge network |
 | `--compact-db` | — | Remove history of metrics that are no longer recorded, drop an unused index and shrink the database file, then exit (dashboard must be stopped; needs free disk in `--data-dir` about the size of the result) |
 
 ### Agent (on each validator server)
@@ -256,12 +270,12 @@ SSH into your node server and paste the copied command. It looks like this:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Test0rMaik/KleverNodeHub/main/scripts/install-agent.sh \
-  | sudo bash -s -- --token <YOUR_TOKEN> --dashboard https://<DASHBOARD_IP>:9443
+  | sudo bash -s -- --token <YOUR_TOKEN> --dashboard https://<DASHBOARD_IP>:9443 --ca-fingerprint <HUB_CA_SHA256>
 ```
 
 The script will:
 1. Install Docker if not present
-2. Download the latest agent binary
+2. Download the latest agent binary and verify it against the signed release checksums (needs `openssl`)
 3. Register with your dashboard using the one-time token
 4. Create and start a `klever-agent` systemd service
 5. Auto-discover existing Klever nodes on the server
@@ -284,9 +298,9 @@ docker run -d \
 # Download from GitHub Releases
 wget https://github.com/Test0rMaik/KleverNodeHub/releases/latest/download/klever-agent-linux-amd64
 
-# Make executable and register
+# Make executable and register (--ca-fingerprint is shown in the dashboard's install command)
 chmod +x klever-agent-linux-amd64
-./klever-agent-linux-amd64 --dashboard-url https://<DASHBOARD_IP>:9443 --register-token <YOUR_TOKEN>
+./klever-agent-linux-amd64 --dashboard-url https://<DASHBOARD_IP>:9443 --register-token <YOUR_TOKEN> --ca-fingerprint <HUB_CA_SHA256>
 ```
 
 After registration, the agent stores its mTLS certificate locally and reconnects automatically — no token needed for subsequent starts.
@@ -298,6 +312,7 @@ After registration, the agent stores its mTLS certificate locally and reconnects
 | `--config-dir` | `~/.klever-agent` | Config directory |
 | `--dashboard-url` | — | Dashboard URL for registration |
 | `--register-token` | — | One-time registration token |
+| `--ca-fingerprint` | — | SHA-256 of the dashboard CA (from the install command). Required when registering against a dashboard without a publicly trusted certificate |
 | `--docker-socket` | `/var/run/docker.sock` | Docker socket path |
 
 ## Project Structure

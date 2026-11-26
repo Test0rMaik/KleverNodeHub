@@ -66,6 +66,18 @@ var settingsDefaults = map[string]string{
 	"indexer_es_pass":              "",
 }
 
+// isUserSetting reports whether key is one of the settingsCategories keys.
+func isUserSetting(key string) bool {
+	for _, keys := range settingsCategories {
+		for _, k := range keys {
+			if k == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // HandleGetAll handles GET /api/settings — returns all settings grouped by category.
 func (h *SettingsHandler) HandleGetAll(w http.ResponseWriter, _ *http.Request) {
 	allSettings, err := h.settings.GetAll()
@@ -98,6 +110,12 @@ func (h *SettingsHandler) HandleGetSingle(w http.ResponseWriter, r *http.Request
 	key := r.PathValue("key")
 	if key == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "key required"})
+		return
+	}
+	// Only the user-facing settings: the same table holds the JWT signing
+	// key, the CA encryption key, password hash and recovery codes.
+	if !isUserSetting(key) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown setting"})
 		return
 	}
 
@@ -158,7 +176,6 @@ func (h *SettingsHandler) HandleUpdateSingle(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "key required"})
 		return
 	}
-
 	// Validate key
 	allowed := make(map[string]bool)
 	for _, keys := range settingsCategories {

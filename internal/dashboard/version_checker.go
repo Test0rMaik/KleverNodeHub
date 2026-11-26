@@ -196,48 +196,9 @@ func isNewer(remote, local string) bool {
 	return compareVersions(remote, local) > 0
 }
 
-// forkRevision extracts N from a fork suffix like "0.3.87-knh.3" (0 if absent).
-// Fork releases share the upstream X.Y.Z, so the revision is the tie-breaker.
-func forkRevision(v string) int {
-	_, suffix, ok := strings.Cut(v, "-knh.")
-	if !ok {
-		return 0
-	}
-	var n int
-	_, _ = fmt.Sscanf(suffix, "%d", &n)
-	return n
-}
-
 // compareVersions compares two semver strings (without 'v' prefix).
 // Returns 1 if a > b, -1 if a < b, 0 if equal.
-func compareVersions(a, b string) int {
-	aParts := strings.Split(a, ".")
-	bParts := strings.Split(b, ".")
-
-	for i := 0; i < 3; i++ {
-		var aNum, bNum int
-		if i < len(aParts) {
-			_, _ = fmt.Sscanf(aParts[i], "%d", &aNum)
-		}
-		if i < len(bParts) {
-			_, _ = fmt.Sscanf(bParts[i], "%d", &bNum)
-		}
-		if aNum > bNum {
-			return 1
-		}
-		if aNum < bNum {
-			return -1
-		}
-	}
-	// Same X.Y.Z: a higher fork revision (-knh.N) is newer.
-	if ra, rb := forkRevision(a), forkRevision(b); ra != rb {
-		if ra > rb {
-			return 1
-		}
-		return -1
-	}
-	return 0
-}
+func compareVersions(a, b string) int { return version.Compare(a, b) }
 
 // FindAsset returns the download URL for a specific binary type.
 // Supports both legacy (klever-node-hub-, klever-agent-) and short (dashboard-, agent-) prefixes.

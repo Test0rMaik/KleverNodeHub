@@ -9,6 +9,11 @@ AGENT_CONFIG_DIR="/etc/klever-agent"
 AGENT_USER="klever-agent"
 SERVICE_NAME="klever-agent"
 
+# Release signing public key (SubjectPublicKeyInfo, base64) — the same key as
+# internal/release.PublicKeyHex. Downloads are installed only if they are listed
+# in a checksums.txt carrying this key's signature.
+RELEASE_PUBKEY_B64="MCowBQYDK2VwAyEAgW3WzL9+A731TnL6OOKDfsBWVWBdgo8W7teI8ZikoTQ="
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -22,18 +27,23 @@ error() { echo -e "${RED}[✗]${RESET} $*" >&2; exit 1; }
 TOKEN=""
 DASHBOARD_URL=""
 BINARY_URL_BASE=""  # optional: overrides the default GitHub release URL
+ALLOW_UNSIGNED=""   # required with --binary-url-base: custom builds are not signed
+CA_FINGERPRINT=""   # SHA-256 of the dashboard CA, pins the dashboard during registration
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --token)           TOKEN="$2"; shift 2 ;;
         --dashboard)       DASHBOARD_URL="$2"; shift 2 ;;
         --binary-url-base) BINARY_URL_BASE="$2"; shift 2 ;;
+        --allow-unsigned)  ALLOW_UNSIGNED=1; shift ;;
+        --ca-fingerprint)  CA_FINGERPRINT="$2"; shift 2 ;;
         *)                 error "Unknown argument: $1" ;;
     esac
 done
 
 [[ -z "$TOKEN" ]] && error "Missing --token argument"
 [[ -z "$DASHBOARD_URL" ]] && error "Missing --dashboard argument"
+[[ -n "$BINARY_URL_BASE" && -z "$ALLOW_UNSIGNED" ]] && error "--binary-url-base installs an unsigned build: add --allow-unsigned to confirm"
 
 # Check root
 [[ $EUID -ne 0 ]] && error "This script must be run as root (sudo)"
@@ -113,23 +123,57 @@ if [[ -n "$BINARY_URL_BASE" ]]; then
         RELEASE_URL="$BINARY_URL_BASE"
     fi
 else
-    RELEASE_URL="https://github.com/Test0rMaik/KleverNodeHub/releases/latest/download/klever-agent-${GOOS}-${GOARCH}"
+    # Resolve "latest" once, so binary and checksums come from the same release.
+    RELEASE_TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/Test0rMaik/KleverNodeHub/releases/latest" | sed 's#.*/tag/##')
+    [[ "$RELEASE_TAG" =~ ^v[0-9A-Za-z.-]+$ ]] || error "Could not determine the latest release (got: ${RELEASE_TAG})"
+    RELEASE_BASE="https://github.com/Test0rMaik/KleverNodeHub/releases/download/${RELEASE_TAG}"
+    RELEASE_URL="${RELEASE_BASE}/klever-agent-${GOOS}-${GOARCH}"
 fi
 
 log "Downloading agent binary..."
-if ! curl -fsSL -o /tmp/klever-agent "$RELEASE_URL"; then
+AGENT_TMP=$(mktemp) # private file: a fixed /tmp path could be swapped between verify and install
+if ! curl -fsSL -o "$AGENT_TMP" "$RELEASE_URL"; then
     error "Failed to download agent binary from: ${RELEASE_URL}"
 fi
 
 # Verify the download is actually an ELF binary, not an HTML error page.
-MAGIC=$(head -c 4 /tmp/klever-agent | od -A n -t x1 | tr -d ' \n')
+MAGIC=$(head -c 4 "$AGENT_TMP" | od -A n -t x1 | tr -d ' \n')
 if [[ "$MAGIC" != "7f454c46" ]]; then
-    rm -f /tmp/klever-agent
+    rm -f "$AGENT_TMP"
     error "Downloaded file is not a valid ELF binary (got content type error or 404). Check the binary URL: ${RELEASE_URL}"
 fi
 
-chmod +x /tmp/klever-agent
-mv /tmp/klever-agent "$AGENT_BIN"
+# Verify the download against the signed release checksums.
+verify_release() {
+    local bin="$1" base="$2" asset="$3" dir expected actual
+    command -v openssl &>/dev/null || error "openssl is required to verify the agent download"
+    # Ed25519 verification of raw data (pkeyutl -rawin) needs OpenSSL 3.
+    [[ "$(openssl version | awk '{print $2}' | cut -d. -f1)" -ge 3 ]] 2>/dev/null \
+        || error "OpenSSL 3 or newer is required to verify the agent download (found: $(openssl version))"
+    dir=$(mktemp -d)
+    trap 'rm -rf "$dir"' RETURN
+    curl -fsSL -o "$dir/checksums.txt" "${base}/checksums.txt" || error "Failed to download release checksums"
+    curl -fsSL -o "$dir/checksums.txt.sig" "${base}/checksums.txt.sig" || error "Release is not signed (no checksums.txt.sig)"
+    printf -- '-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n' "$RELEASE_PUBKEY_B64" > "$dir/release.pub"
+    base64 -d "$dir/checksums.txt.sig" > "$dir/sig.bin" 2>/dev/null || error "Malformed release signature"
+    openssl pkeyutl -verify -pubin -inkey "$dir/release.pub" -rawin \
+        -in "$dir/checksums.txt" -sigfile "$dir/sig.bin" &>/dev/null \
+        || error "Release signature verification FAILED — not installing"
+    grep -Fqx "# release ${RELEASE_TAG}" "$dir/checksums.txt" || error "Signed checksums are not for release ${RELEASE_TAG}"
+    expected=$(awk -v a="$asset" '$2 == a || $2 == "*" a {print tolower($1)}' "$dir/checksums.txt")
+    actual=$(sha256sum "$bin" | awk '{print $1}')
+    [[ -n "$expected" && "$expected" == "$actual" ]] || error "Agent binary does not match the signed release checksum — not installing"
+    log "Release ${RELEASE_TAG}: signature and checksum verified"
+}
+
+if [[ -z "$BINARY_URL_BASE" ]]; then
+    verify_release "$AGENT_TMP" "$RELEASE_BASE" "klever-agent-${GOOS}-${GOARCH}"
+else
+    warn "Installing an UNSIGNED agent build from ${RELEASE_URL} (--allow-unsigned)"
+fi
+
+chmod 755 "$AGENT_TMP"
+mv "$AGENT_TMP" "$AGENT_BIN"
 log "Agent installed to ${AGENT_BIN}"
 
 # Create config directory
@@ -161,7 +205,7 @@ log "Systemd service created and enabled"
 
 # Register with dashboard
 log "Registering with dashboard..."
-if ! "${AGENT_BIN}" --register-token "$TOKEN" --dashboard-url "$DASHBOARD_URL" --config-dir "$AGENT_CONFIG_DIR"; then
+if ! "${AGENT_BIN}" --register-token "$TOKEN" --dashboard-url "$DASHBOARD_URL" --ca-fingerprint "$CA_FINGERPRINT" --config-dir "$AGENT_CONFIG_DIR"; then
     error "Registration failed"
 fi
 
