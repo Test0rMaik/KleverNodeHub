@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Klever Node Hub - Security Check</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0d1117">
+    <link rel="icon" type="image/png" sizes="192x192" href="/static/img/icon-192.png">
+    <link rel="apple-touch-icon" href="/static/img/icon-192.png">
+</head>
+<body>
+    <div class="overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+    <div class="app">
+        <!--#sidebar-->
+
+        <main class="main-content">
+            <div class="topbar">
+                <button class="hamburger" onclick="toggleSidebar()">&#9776;</button>
+                <h1>Security Check</h1>
+                <div style="width:36px"></div>
+            </div>
+
+            <div class="page-header">
+                <div class="page-header-left">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    <span class="page-header-title">Security Check</span>
+                    <span class="page-header-sub">Login methods, agents and stored binaries</span>
+                </div>
+            </div>
+
+            <div class="page-body">
+                <div class="card mb-16">
+                    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                        <h3>Dashboard</h3>
+                        <button class="btn btn-secondary btn-sm" id="btn-sec-check" onclick="runSecurityCheck()">Run Again</button>
+                    </div>
+                    <div class="card-body">
+                        <div id="sec-findings"></div>
+                        <div id="sec-logins" style="margin-top:12px;"></div>
+                    </div>
+                </div>
+
+                <div class="card mb-16">
+                    <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                        <h3>Servers</h3>
+                        <button class="btn btn-primary btn-sm" id="btn-sec-servers" onclick="runServerCheck()">Check Servers</button>
+                    </div>
+                    <div class="card-body">
+                        <div id="sec-servers"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/agent-update-check.js"></script>
+    <script>
+    var serverChecks = {};
+
+    (async function() {
+        await API.refresh();
+        runSecurityCheck();
+    })();
+
+    function esc(s) {
+        var d = document.createElement('div');
+        d.textContent = s == null ? '' : String(s);
+        return d.innerHTML;
+    }
+    function fmtDate(ts) { return ts ? new Date(ts * 1000).toLocaleString() : ''; }
+    function line(color, html) {
+        return '<div style="padding:6px 0;font-size:13px;color:' + color + ';border-bottom:1px solid var(--border);">' + html + '</div>';
+    }
+    var RED = 'var(--error)', GREEN = 'var(--success, #22c55e)', MUTED = 'var(--text-secondary)', TEXT = 'var(--text-primary)';
+
+    var lastOverview = null;
+
+    async function runSecurityCheck() {
+        var d = await API.getJSON('/api/security/check');
+        if (!d) {
+            document.getElementById('sec-findings').innerHTML = line(RED, 'Check failed');
+            return;
+        }
+        lastOverview = d;
+        var warns = (d.findings || []).filter(function(f) { return f.level === 'warn'; });
+        var infos = (d.findings || []).filter(function(f) { return f.level !== 'warn'; });
+        var html = '';
+        warns.forEach(function(f) { html += line(RED, esc(f.text)); });
+        if (warns.length === 0) html += line(GREEN, 'No findings in the dashboard data');
+        infos.forEach(function(f) { html += line(MUTED, esc(f.text)); });
+        document.getElementById('sec-findings').innerHTML = html;
+
+        var logins = '';
+        (d.passkeys || []).forEach(function(p) {
+            logins += line(TEXT, 'Passkey <strong>' + esc(p.name) + '</strong> &middot; registered ' + esc(fmtDate(p.registered_at)) + ' &middot; used ' + esc(p.sign_count) + '&times;');
+        });
+        if ((d.passkeys || []).length === 0) logins += line(MUTED, 'No passkeys');
+        logins += line(d.klever_address ? TEXT : MUTED, d.klever_address ? 'Klever wallet <span style="font-family:monospace;font-size:12px;">' + esc(d.klever_address) + '</span>' : 'No Klever wallet');
+        logins += line(MUTED, d.has_password ? 'Password set' : 'No password');
+        document.getElementById('sec-logins').innerHTML = logins;
+
+        renderServers();
+    }
+
+    function renderServers() {
+        var d = lastOverview;
+        if (!d) return;
+        var labels = { ok: 'no known traces', warn: 'FINDINGS', offline: 'offline', unsupported: 'agent too old for this check', error: 'check failed' };
+        var html = '';
+        (d.servers || []).forEach(function(s) {
+            var color = s.release_version ? TEXT : RED;
+            var text = '<strong>' + esc(s.name) + '</strong> &middot; agent ' + esc(s.agent_version || 'unknown') +
+                ' &middot; registered ' + esc(fmtDate(s.registered_at)) + (s.online ? '' : ' &middot; offline');
+            var c = serverChecks[s.id];
+            if (c && c.status !== 'offline') {
+                text += '<br>' + esc(labels[c.status] || c.status);
+                if (c.binary) text += ' &middot; agent binary ' + esc(c.binary);
+                if (c.detail) text += ' &middot; ' + esc(c.detail);
+                (c.files || []).forEach(function(f) { text += '<br><span style="font-family:monospace;font-size:12px;">' + esc(f) + '</span>'; });
+                if (c.status === 'warn') color = RED;
+                else if (c.status === 'ok' && s.release_version) color = GREEN;
+            }
+            html += line(color, text);
+        });
+        if ((d.servers || []).length === 0) html = line(MUTED, 'No servers registered');
+        document.getElementById('sec-servers').innerHTML = html;
+    }
+
+    async function runServerCheck() {
+        var btn = document.getElementById('btn-sec-servers');
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+        var res = await API.postJSON('/api/security/check/servers', {});
+        btn.disabled = false;
+        btn.textContent = 'Check Servers';
+        if (!res || !res.ok) {
+            document.getElementById('sec-servers').innerHTML = line(RED, 'Server check failed');
+            return;
+        }
+        serverChecks = {};
+        (res.data.servers || []).forEach(function(s) { serverChecks[s.server_id] = s; });
+        renderServers();
+    }
+    </script>
+    <script>
+    (function() {
+        function updateSidebarAlertBadge(alerts) {
+            var badge = document.getElementById('sidebar-alert-badge');
+            if (!badge) return;
+            var count = alerts ? alerts.length : 0;
+            if (count === 0) {
+                badge.classList.remove('visible', 'pulse');
+                badge.textContent = '';
+                return;
+            }
+            badge.textContent = count;
+            badge.classList.add('visible');
+            var hasCritical = alerts.some(function(a) { return a.severity === 'critical'; });
+            if (hasCritical) { badge.classList.add('pulse'); } else { badge.classList.remove('pulse'); }
+        }
+        async function pollAlerts() {
+            try {
+                var data = await API.getJSON('/api/alerts');
+                if (data && data.alerts) updateSidebarAlertBadge(data.alerts);
+            } catch(e) {}
+        }
+        pollAlerts();
+        setInterval(pollAlerts, 15000);
+    })();
+
+    function toggleSidebar() {
+        document.getElementById('sidebar').classList.toggle('open');
+        document.getElementById('sidebar-overlay').classList.toggle('active');
+    }
+    </script>
+</body>
+</html>
