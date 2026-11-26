@@ -104,6 +104,15 @@ func (h *UpdateHandler) SetAllowUnsignedBinaries(v bool) { h.allowUnsigned = v }
 // errUnsignedDisabled is returned by the upload and custom-URL routes.
 const errUnsignedDisabled = "custom agent binaries are disabled: only signed releases can be installed (start the dashboard with --allow-unsigned-agent-binaries to enable)"
 
+// errUnsignedStored is returned when a stored binary carries no release
+// signature: it is never handed to an agent unless unsigned builds are enabled.
+const errUnsignedStored = "stored agent binary %s is not from a signed release: download the release again (Agent Update) and retry"
+
+// deliverable reports whether a stored binary may be handed to agents.
+func (h *UpdateHandler) deliverable(info *dashboard.AgentBinaryInfo) bool {
+	return info != nil && (info.Signed() || h.allowUnsigned)
+}
+
 // buildAgentUpdatePayload chooses the update transport per agent. If the agent
 // advertised the http-update capability it gets a download_path and pulls the
 // binary over a separate HTTP request (keeping the ~15 MB off the WebSocket);
@@ -236,6 +245,10 @@ func (h *UpdateHandler) HandleAgentBinary(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	if !h.deliverable(info) {
+		http.Error(w, fmt.Sprintf(errUnsignedStored, info.Version), http.StatusForbidden)
+		return
+	}
 
 	// The server-wide WriteTimeout (30s) is too short for ~15 MB over a slow
 	// link; extend it for this response only.
@@ -286,6 +299,10 @@ func (h *UpdateHandler) HandleUpdateAgent(w http.ResponseWriter, r *http.Request
 	}
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("no binary for %s/%s: %v", osName, arch, err)})
+		return
+	}
+	if !h.deliverable(info) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf(errUnsignedStored, info.Version)})
 		return
 	}
 
@@ -413,6 +430,13 @@ func (h *UpdateHandler) HandleUpdateAll(w http.ResponseWriter, r *http.Request) 
 			results = append(results, updateResult{
 				ServerID: srv.ID, Name: srv.Name,
 				Success: false, Error: fmt.Sprintf("no binary for %s/%s", osName, arch),
+			})
+			continue
+		}
+		if !h.deliverable(info) {
+			results = append(results, updateResult{
+				ServerID: srv.ID, Name: srv.Name,
+				Success: false, Error: fmt.Sprintf(errUnsignedStored, info.Version),
 			})
 			continue
 		}

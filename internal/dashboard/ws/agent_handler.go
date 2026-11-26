@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -18,6 +19,10 @@ import (
 	"github.com/CTJaeger/KleverNodeHub/internal/models"
 	"github.com/CTJaeger/KleverNodeHub/internal/store"
 )
+
+// releaseVersion matches release tags; an agent reporting anything else was not
+// installed from a release.
+var releaseVersion = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 
 // AgentHandler handles WebSocket connections from agents.
 type AgentHandler struct {
@@ -590,6 +595,9 @@ func (h *AgentHandler) handleAgentInfo(ctx context.Context, serverID string, msg
 			srv.AgentVersion = info.Version
 			_ = h.serverStore.Update(srv)
 			log.Printf("agent %s version updated to %s", serverID, info.Version)
+			if !releaseVersion.MatchString(info.Version) {
+				log.Printf("WARNING: agent %s reports version %q, which is not a release — check this server", serverID, info.Version)
+			}
 		}
 	}
 

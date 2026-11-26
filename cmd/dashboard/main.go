@@ -365,6 +365,8 @@ func main() {
 	tokenManager := dashboard.NewTokenManager()
 	regHandler := handlers.NewRegistrationHandler(tokenManager, serverStore, ca)
 
+	securityHandler := handlers.NewSecurityHandler(authHandler, serverStore, updateStore, hub)
+
 	// First-run wizard token: only someone who can read this log may claim
 	// a fresh install. A new one is made on every start until setup is done.
 	if setupToken, err := crypto.RandomHex(16); err != nil {
@@ -444,12 +446,15 @@ func main() {
 
 	// WebSocket endpoint for agents (authenticated via mTLS cert, not JWT)
 	wsHandler := ws.NewAgentHandler(hub, serverStore, nodeStore, metricsStore, versionHistoryStore, geoResolver)
-	// Unsigned (legacy) agent connections are refused: with only a server_id
-	// anyone could take over an agent's channel. Setting
-	// require_signed_agent_auth=false re-allows them for very old agents.
+	// Per server, as upstream: an agent that never signed may still connect
+	// (so agents migrating from upstream < v0.3.91 can be updated through the
+	// dashboard); after its first signed connect, unsigned ones are refused
+	// for that server. require_signed_agent_auth=true refuses unsigned
+	// connects for every server; the Security Check lists agents that never
+	// signed.
 	wsHandler.SetRequireSignedAuth(func() bool {
 		v, _ := settingsStore.Get("require_signed_agent_auth")
-		return v != "false"
+		return v == "true"
 	})
 	mux.HandleFunc("GET /ws/agent", wsHandler.HandleUpgrade)
 
@@ -463,6 +468,8 @@ func main() {
 	mux.Handle("DELETE /api/auth/passkeys/{id}", authMw(http.HandlerFunc(authHandler.HandleDeletePasskey)))
 	mux.Handle("PUT /api/auth/password", authMw(http.HandlerFunc(authHandler.HandleChangePassword)))
 	mux.Handle("POST /api/auth/logout-all", authMw(http.HandlerFunc(authHandler.HandleLogoutAll)))
+	mux.Handle("GET /api/security/check", authMw(http.HandlerFunc(securityHandler.HandleCheck)))
+	mux.Handle("POST /api/security/check/servers", authMw(http.HandlerFunc(securityHandler.HandleCheckServers)))
 	mux.Handle("GET /api/auth/klever", authMw(http.HandlerFunc(authHandler.HandleKleverStatus)))
 	mux.Handle("POST /api/setup/klever/challenge", authMw(http.HandlerFunc(authHandler.HandleKleverSetupChallenge)))
 	mux.Handle("POST /api/setup/klever", authMw(http.HandlerFunc(authHandler.HandleKleverSetup)))
