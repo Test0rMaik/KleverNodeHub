@@ -109,7 +109,7 @@ docker run -d \
   -p 9443:9443 \
   -v klever-data:/root/.klever-node-hub \
   --name klever-node-hub \
-  ctjaeger/klever-node-hub:latest \
+  ghcr.io/test0rmaik/klever-node-hub:latest \
   --domain your-server.example.com
 ```
 
@@ -194,7 +194,7 @@ The script automatically:
 docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --name klever-agent \
-  ctjaeger/klever-agent:latest \
+  ghcr.io/test0rmaik/klever-agent:latest \
   --dashboard-url https://<DASHBOARD_IP>:9443 \
   --register-token <YOUR_TOKEN>
 ```
@@ -844,8 +844,8 @@ For security vulnerabilities, use [GitHub's private vulnerability reporting](htt
 ### Can I run the dashboard in Docker?
 
 **Yes.** Both the dashboard and agent are available as Docker images on Docker Hub:
-- `ctjaeger/klever-node-hub:latest`
-- `ctjaeger/klever-agent:latest`
+- `ghcr.io/test0rmaik/klever-node-hub:latest`
+- `ghcr.io/test0rmaik/klever-agent:latest`
 
 ### What if my dashboard goes down?
 
@@ -882,7 +882,7 @@ The agent is extremely lightweight — typically under 20 MB memory and negligib
 ## Links
 
 - **GitHub:** [github.com/Test0rMaik/KleverNodeHub](https://github.com/Test0rMaik/KleverNodeHub)
-- **Docker Hub:** [hub.docker.com/r/ctjaeger/klever-node-hub](https://hub.docker.com/r/ctjaeger/klever-node-hub)
+- **Docker images:** [ghcr.io/test0rmaik/klever-node-hub](https://github.com/Test0rMaik/KleverNodeHub/pkgs/container/klever-node-hub)
 - **Issues & Feature Requests:** [GitHub Issues](https://github.com/Test0rMaik/KleverNodeHub/issues)
 - **License:** MIT
 

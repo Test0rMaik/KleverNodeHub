@@ -12,8 +12,6 @@ permissions:
 
 env:
   GO_VERSION: '1.26'
-  DOCKER_HUB_REPO: ctjaeger/klever-node-hub
-  DOCKER_HUB_AGENT_REPO: ctjaeger/klever-agent
 
 jobs:
   test:
@@ -93,11 +91,18 @@ jobs:
           path: bin/
 
   docker:
-    name: Docker
+    name: Docker images (GHCR)
     needs: [test]
-    # Docker Hub repos belong to upstream; the fork ships GitHub release binaries only.
-    if: github.repository == 'CTJaeger/KleverNodeHub'
+    # Images for this repository only (upstream's Docker Hub images ended with
+    # its archived repository). Pushed as ghcr.io/test0rmaik/<image>:<tag>
+    # and :latest; Docker users pull new releases, the hub does not self-update.
+    if: github.repository == 'Test0rMaik/KleverNodeHub'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_PREFIX: ghcr.io/test0rmaik
     steps:
       - uses: actions/checkout@v6
 
@@ -108,16 +113,20 @@ jobs:
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "build_time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Dashboard
+      - name: Build and push dashboard image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -129,10 +138,10 @@ jobs:
             GIT_COMMIT=${{ steps.vars.outputs.commit }}
             BUILD_TIME=${{ steps.vars.outputs.build_time }}
           tags: |
-            ${{ env.DOCKER_HUB_REPO }}:${{ steps.vars.outputs.version }}
-            ${{ env.DOCKER_HUB_REPO }}:latest
+            ${{ env.IMAGE_PREFIX }}/klever-node-hub:${{ steps.vars.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}/klever-node-hub:latest
 
-      - name: Build and push Agent
+      - name: Build and push agent image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -144,8 +153,8 @@ jobs:
             GIT_COMMIT=${{ steps.vars.outputs.commit }}
             BUILD_TIME=${{ steps.vars.outputs.build_time }}
           tags: |
-            ${{ env.DOCKER_HUB_AGENT_REPO }}:${{ steps.vars.outputs.version }}
-            ${{ env.DOCKER_HUB_AGENT_REPO }}:latest
+            ${{ env.IMAGE_PREFIX }}/klever-agent:${{ steps.vars.outputs.version }}
+            ${{ env.IMAGE_PREFIX }}/klever-agent:latest
 
   release:
     name: Create Release

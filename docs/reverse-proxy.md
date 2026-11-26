@@ -35,7 +35,7 @@ docker run -d \
   -p 127.0.0.1:9443:9443 \
   -v klever-data:/root/.klever-node-hub \
   --name klever-node-hub \
-  ctjaeger/klever-node-hub:latest \
+  ghcr.io/test0rmaik/klever-node-hub:latest \
   --domain your-domain.example.com
 ```
 
@@ -198,7 +198,7 @@ sudo certbot renew --dry-run
 ```yaml
 services:
   klever-node-hub:
-    image: ctjaeger/klever-node-hub:latest
+    image: ghcr.io/test0rmaik/klever-node-hub:latest
     command: --domain your-domain.example.com
     volumes:
       - klever-data:/root/.klever-node-hub

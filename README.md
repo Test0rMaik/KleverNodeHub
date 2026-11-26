@@ -2,12 +2,12 @@
 
 [![CI](https://github.com/Test0rMaik/KleverNodeHub/actions/workflows/ci.yml/badge.svg)](https://github.com/Test0rMaik/KleverNodeHub/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![Docker Hub](https://img.shields.io/docker/v/ctjaeger/klever-node-hub?label=Docker&logo=docker)](https://hub.docker.com/r/ctjaeger/klever-node-hub)
+[![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/Test0rMaik/KleverNodeHub/pkgs/container/klever-node-hub)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Self-hosted management dashboard for Klever validator nodes**
 
-> **Fork notice:** This is [Test0rMaik/KleverNodeHub](https://github.com/Test0rMaik/KleverNodeHub), a fork of [CTJaeger/KleverNodeHub](https://github.com/CTJaeger/KleverNodeHub) with additional features not present in upstream. See [Fork Enhancements](#fork-enhancements) below.
+> **Fork notice:** This is [Test0rMaik/KleverNodeHub](https://github.com/Test0rMaik/KleverNodeHub), the continuation of [CTJaeger/KleverNodeHub](https://github.com/CTJaeger/KleverNodeHub). Upstream is archived; its last release (v0.3.93) moves existing installations over to this repository's signed releases. This fork carries all upstream features up to v0.3.92 plus additional ones — see [Fork Enhancements](#fork-enhancements) below.
 
 ![Dashboard Overview](docs/dash.png)
 
@@ -15,7 +15,7 @@
 
 ## Fork Enhancements
 
-Features exclusive to this fork (not in upstream):
+Features this fork added on top of upstream (the signed releases and the knh.6 hardening were later adopted by upstream v0.3.89):
 
 ### Indexer Status Page
 A dedicated **Indexer** page monitors a self-hosted Klever observer/indexer node and its Elasticsearch backend:
@@ -47,7 +47,7 @@ Export the whole hub as **one passphrase-encrypted file** and restore it on anot
 
 ### Fork Release Channel & Signed Agent Auth
 - **Update notifications follow this fork** — the update banner, dashboard self-update and agent updates use this repo's GitHub releases (built by CI on `v*-knh.*` tags), never upstream builds.
-- **Signed agent connections** — agents prove ownership of their private key on every WebSocket connect (replay-protected); a guessed server ID is no longer enough to impersonate an agent. Required by default since knh.6 (`require_signed_agent_auth=false` re-allows pre-knh.2 agents).
+- **Signed agent connections** — agents prove ownership of their private key on every WebSocket connect (replay-protected); a guessed server ID is no longer enough to impersonate an agent. Enforced per server: once an agent has connected with a signature, unsigned connects for that server are refused; `require_signed_agent_auth=true` refuses unsigned connects for all servers, and the Security Check lists agents that never signed.
 
 ### Signed Releases & Hardened Hub (knh.6)
 - **Agents only install signed releases** — CI signs each release's `checksums.txt` with an Ed25519 key whose public half is compiled into hub and agent. An agent verifies every update itself and refuses anything else, so a hijacked hub cannot push code to your servers. The hub's self-update and `install-agent.sh` check the same signature.
@@ -235,7 +235,7 @@ docker run -d \
   -v klever-data:/root/.klever-node-hub \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --name klever-node-hub \
-  ctjaeger/klever-node-hub:latest \
+  ghcr.io/test0rmaik/klever-node-hub:latest \
   --domain your-server.example.com
 ```
 
@@ -294,7 +294,7 @@ The script will:
 docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --name klever-agent \
-  ctjaeger/klever-agent:latest \
+  ghcr.io/test0rmaik/klever-agent:latest \
   --dashboard-url https://<DASHBOARD_IP>:9443 --register-token <YOUR_TOKEN>
 ```
 

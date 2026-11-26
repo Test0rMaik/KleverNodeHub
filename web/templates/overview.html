@@ -2734,7 +2734,7 @@
                     if (data.is_docker && !data.docker_self_update_available) {
                         // Docker without socket mount: show pull hint, hide update button
                         btn.style.display = 'none';
-                        hint.textContent = 'docker pull ctjaeger/klever-node-hub:' + data.latest_version
+                        hint.textContent = 'docker pull ghcr.io/test0rmaik/klever-node-hub:' + data.latest_version
                             + '  (mount /var/run/docker.sock to enable one-click updates)';
                         hint.classList.remove('hidden');
                     } else {
